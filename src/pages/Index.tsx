@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { Download, Youtube, Zap, Shield, Globe } from "lucide-react";
+import { Download, Zap, Shield, Globe } from "lucide-react";
 import UrlInput from "@/components/UrlInput";
 import VideoPreview, { type VideoInfo } from "@/components/VideoPreview";
 import FormatSelector from "@/components/FormatSelector";
 import { useToast } from "@/hooks/use-toast";
+import bearLogo from "@/assets/bear-logo.png";
 
 const MOCK_VIDEO: VideoInfo = {
   title: "Big Buck Bunny - Exemplo de vídeo para demonstração",
@@ -68,8 +69,8 @@ const Index = () => {
         {/* Header */}
         <header className="flex items-center justify-center pt-6 pb-2">
           <div className="flex items-center gap-2 text-muted-foreground text-sm">
-            <Download className="h-4 w-4" />
-            <span className="font-medium">Powered by yt-dlp</span>
+            <img src={bearLogo} alt="Cath Bear" className="h-5 w-auto" />
+            <span className="font-medium">Cath Bear Downloader</span>
           </div>
         </header>
 
@@ -82,13 +83,11 @@ const Index = () => {
             className="text-center space-y-4"
           >
             <div className="flex items-center justify-center gap-3 mb-6">
-              <div className="p-3 bg-primary/10 rounded-2xl border border-primary/20">
-                <Youtube className="h-10 w-10 text-primary" />
-              </div>
+              <img src={bearLogo} alt="Cath Bear Logo" className="h-16 w-auto" />
             </div>
             <h1 className="text-4xl md:text-5xl lg:text-6xl font-display font-bold text-foreground tracking-tight">
-              Baixe vídeos do{" "}
-              <span className="text-gradient">YouTube</span>
+              <span className="text-gradient">Cath Bear</span>{" "}
+              Downloader
             </h1>
             <p className="text-muted-foreground text-lg max-w-md mx-auto">
               Cole o link, escolha o formato e baixe. Simples assim.
