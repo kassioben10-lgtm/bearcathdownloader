@@ -69,8 +69,8 @@ const Index = () => {
         {/* Header */}
         <header className="flex items-center justify-center pt-6 pb-2">
           <div className="flex items-center gap-2 text-muted-foreground text-sm">
-            <img src={bearLogo} alt="Cath Bear" className="h-5 w-auto" />
-            <span className="font-medium">Cath Bear Downloader</span>
+            <img src={bearLogo} alt="Bear Catch" className="h-5 w-auto" />
+            <span className="font-medium">Bear Catch Downloader</span>
           </div>
         </header>
 
@@ -83,10 +83,10 @@ const Index = () => {
             className="text-center space-y-4"
           >
             <div className="flex items-center justify-center gap-3 mb-6">
-              <img src={bearLogo} alt="Cath Bear Logo" className="h-16 w-auto" />
+              <img src={bearLogo} alt="Bear Catch Logo" className="h-16 w-auto" />
             </div>
             <h1 className="text-4xl md:text-5xl lg:text-6xl font-display font-bold text-foreground tracking-tight">
-              <span className="text-gradient">Cath Bear</span>{" "}
+              <span className="text-gradient">Bear Catch</span>{" "}
               Downloader
             </h1>
             <p className="text-muted-foreground text-lg max-w-md mx-auto">
