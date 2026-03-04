@@ -5,6 +5,7 @@ import UrlInput from "@/components/UrlInput";
 import VideoPreview, { type VideoInfo } from "@/components/VideoPreview";
 import FormatSelector from "@/components/FormatSelector";
 import { useToast } from "@/hooks/use-toast";
+import { supabase } from "@/integrations/supabase/client";
 import bearLogo from "@/assets/bear-logo.png";
 
 const features = [
@@ -15,6 +16,7 @@ const features = [
 
 const Index = () => {
   const [isLoading, setIsLoading] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
   const [video, setVideo] = useState<VideoInfo | null>(null);
   const [currentUrl, setCurrentUrl] = useState("");
   const { toast } = useToast();
@@ -61,18 +63,50 @@ const Index = () => {
     setIsLoading(false);
   };
 
-  const handleDownload = (format: string, quality: string) => {
+  const handleDownload = async (format: string, quality: string) => {
     if (!currentUrl) return;
 
-    // Build cobalt.tools URL with settings
-    const cobaltUrl = `https://cobalt.tools/#${encodeURIComponent(currentUrl)}`;
-
+    setIsDownloading(true);
     toast({
-      title: "Redirecionando para download...",
-      description: `Abrindo o processador de ${format === "video" ? "vídeo" : "áudio"}. Cole a URL se necessário.`,
+      title: "Processando download...",
+      description: "Extraindo link direto do YouTube. Aguarde...",
     });
 
-    window.open(cobaltUrl, "_blank", "noopener,noreferrer");
+    try {
+      const { data, error } = await supabase.functions.invoke("download", {
+        body: { url: currentUrl, format, quality },
+      });
+
+      if (error) throw error;
+
+      if (data?.status === "success" && data?.downloadUrl) {
+        toast({
+          title: "Download pronto!",
+          description: `Iniciando download: ${data.quality}`,
+        });
+
+        // Open direct YouTube stream URL
+        const link = document.createElement("a");
+        link.href = data.downloadUrl;
+        link.download = data.filename || "download";
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      } else {
+        throw new Error(data?.error || "Erro desconhecido");
+      }
+    } catch (err: any) {
+      console.error("Download error:", err);
+      toast({
+        title: "Erro no download",
+        description: err.message || "Não foi possível processar. Tente novamente.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsDownloading(false);
+    }
   };
 
   return (
@@ -111,7 +145,7 @@ const Index = () => {
           {video && (
             <div className="space-y-6">
               <VideoPreview video={video} />
-              <FormatSelector onDownload={handleDownload} />
+              <FormatSelector onDownload={handleDownload} isDownloading={isDownloading} />
             </div>
           )}
 
@@ -142,7 +176,7 @@ const Index = () => {
         </main>
 
         <footer className="text-center py-8 text-muted-foreground text-sm border-t border-border/50">
-          <p>Este serviço utiliza cobalt.tools. Respeite os direitos autorais.</p>
+          <p>Bear Catch Downloader. Respeite os direitos autorais.</p>
         </footer>
       </div>
     </div>
