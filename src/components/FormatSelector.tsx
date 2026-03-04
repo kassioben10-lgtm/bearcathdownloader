@@ -1,17 +1,16 @@
 import { motion } from "framer-motion";
-import { Download, Film, Music, ChevronDown, Loader2 } from "lucide-react";
+import { Download, Film, Music, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
 
 interface FormatSelectorProps {
   onDownload: (format: string, quality: string) => void;
-  isDownloading?: boolean;
 }
 
 const videoQualities = ["2160p (4K)", "1080p (Full HD)", "720p (HD)", "480p", "360p"];
 const audioQualities = ["320kbps", "256kbps", "192kbps", "128kbps"];
 
-const FormatSelector = ({ onDownload, isDownloading }: FormatSelectorProps) => {
+const FormatSelector = ({ onDownload }: FormatSelectorProps) => {
   const [format, setFormat] = useState<"video" | "audio">("video");
   const [quality, setQuality] = useState(videoQualities[1]);
   const [showQualities, setShowQualities] = useState(false);
@@ -31,7 +30,6 @@ const FormatSelector = ({ onDownload, isDownloading }: FormatSelectorProps) => {
       transition={{ delay: 0.2, duration: 0.4 }}
       className="w-full max-w-2xl mx-auto space-y-4"
     >
-      {/* Format Toggle */}
       <div className="flex items-center gap-2 bg-card border border-border rounded-xl p-1.5">
         <button
           onClick={() => handleFormatChange("video")}
@@ -57,7 +55,6 @@ const FormatSelector = ({ onDownload, isDownloading }: FormatSelectorProps) => {
         </button>
       </div>
 
-      {/* Quality Selector */}
       <div className="relative">
         <button
           onClick={() => setShowQualities(!showQualities)}
@@ -89,25 +86,14 @@ const FormatSelector = ({ onDownload, isDownloading }: FormatSelectorProps) => {
         )}
       </div>
 
-      {/* Download Button */}
       <Button
         variant="glow"
         size="lg"
         className="w-full text-base py-6"
         onClick={() => onDownload(format, quality)}
-        disabled={isDownloading}
       >
-        {isDownloading ? (
-          <>
-            <Loader2 className="h-5 w-5 mr-2 animate-spin" />
-            Processando...
-          </>
-        ) : (
-          <>
-            <Download className="h-5 w-5 mr-2" />
-            Baixar {format === "video" ? "Vídeo" : "Áudio"}
-          </>
-        )}
+        <Download className="h-5 w-5 mr-2" />
+        Baixar {format === "video" ? "Vídeo" : "Áudio"}
       </Button>
     </motion.div>
   );
