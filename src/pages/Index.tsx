@@ -5,15 +5,8 @@ import UrlInput from "@/components/UrlInput";
 import VideoPreview, { type VideoInfo } from "@/components/VideoPreview";
 import FormatSelector from "@/components/FormatSelector";
 import { useToast } from "@/hooks/use-toast";
+import { supabase } from "@/integrations/supabase/client";
 import bearLogo from "@/assets/bear-logo.png";
-
-const MOCK_VIDEO: VideoInfo = {
-  title: "Big Buck Bunny - Exemplo de vídeo para demonstração",
-  thumbnail: "https://img.youtube.com/vi/dQw4w9WgXcQ/maxresdefault.jpg",
-  duration: "10:35",
-  views: "1.2M visualizações",
-  channel: "Canal Exemplo",
-};
 
 const features = [
   { icon: Zap, title: "Rápido", desc: "Downloads em alta velocidade" },
@@ -23,11 +16,12 @@ const features = [
 
 const Index = () => {
   const [isLoading, setIsLoading] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
   const [video, setVideo] = useState<VideoInfo | null>(null);
+  const [currentUrl, setCurrentUrl] = useState("");
   const { toast } = useToast();
 
   const handleSearch = async (url: string) => {
-    // Validate YouTube URL
     const ytRegex = /^(https?:\/\/)?(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)[\w-]+/;
     if (!ytRegex.test(url)) {
       toast({
@@ -39,25 +33,82 @@ const Index = () => {
     }
 
     setIsLoading(true);
-    // Simulate API call
-    await new Promise((r) => setTimeout(r, 1500));
+    setCurrentUrl(url);
 
     // Extract video ID for thumbnail
     const videoIdMatch = url.match(/(?:v=|youtu\.be\/|shorts\/)([\w-]+)/);
     const videoId = videoIdMatch?.[1] || "dQw4w9WgXcQ";
 
+    // Try to fetch video info via oEmbed (public, no API key needed)
+    let title = "Vídeo do YouTube";
+    let channel = "YouTube";
+    try {
+      const oembedRes = await fetch(
+        `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`
+      );
+      if (oembedRes.ok) {
+        const data = await oembedRes.json();
+        title = data.title || title;
+        channel = data.author_name || channel;
+      }
+    } catch {
+      // fallback to defaults
+    }
+
     setVideo({
-      ...MOCK_VIDEO,
+      title,
       thumbnail: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
+      duration: "",
+      views: "",
+      channel,
     });
     setIsLoading(false);
   };
 
-  const handleDownload = (format: string, quality: string) => {
+  const handleDownload = async (format: string, quality: string) => {
+    if (!currentUrl) return;
+
+    setIsDownloading(true);
     toast({
-      title: "Download iniciado!",
-      description: `Baixando ${format === "video" ? "vídeo" : "áudio"} em ${quality}...`,
+      title: "Processando download...",
+      description: "Aguarde enquanto preparamos seu arquivo.",
     });
+
+    try {
+      const { data, error } = await supabase.functions.invoke("download", {
+        body: { url: currentUrl, format, quality },
+      });
+
+      if (error) throw error;
+
+      if (data?.status === "success" && data?.downloadUrl) {
+        toast({
+          title: "Download pronto!",
+          description: "O download vai iniciar automaticamente.",
+        });
+
+        // Open download URL in new tab
+        const link = document.createElement("a");
+        link.href = data.downloadUrl;
+        link.download = data.filename || "download";
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      } else {
+        throw new Error(data?.error || "Erro desconhecido");
+      }
+    } catch (err: any) {
+      console.error("Download error:", err);
+      toast({
+        title: "Erro no download",
+        description: err.message || "Não foi possível processar o download. Tente novamente.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsDownloading(false);
+    }
   };
 
   return (
@@ -99,7 +150,7 @@ const Index = () => {
           {video && (
             <div className="space-y-6">
               <VideoPreview video={video} />
-              <FormatSelector onDownload={handleDownload} />
+              <FormatSelector onDownload={handleDownload} isDownloading={isDownloading} />
             </div>
           )}
 
@@ -132,7 +183,7 @@ const Index = () => {
 
         {/* Footer */}
         <footer className="text-center py-8 text-muted-foreground text-sm border-t border-border/50">
-          <p>Este serviço utiliza yt-dlp. Respeite os direitos autorais.</p>
+          <p>Este serviço utiliza cobalt.tools. Respeite os direitos autorais.</p>
         </footer>
       </div>
     </div>

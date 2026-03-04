@@ -1,16 +1,17 @@
 import { motion } from "framer-motion";
-import { Download, Film, Music, ChevronDown } from "lucide-react";
+import { Download, Film, Music, ChevronDown, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
 
 interface FormatSelectorProps {
   onDownload: (format: string, quality: string) => void;
+  isDownloading?: boolean;
 }
 
 const videoQualities = ["2160p (4K)", "1080p (Full HD)", "720p (HD)", "480p", "360p"];
 const audioQualities = ["320kbps", "256kbps", "192kbps", "128kbps"];
 
-const FormatSelector = ({ onDownload }: FormatSelectorProps) => {
+const FormatSelector = ({ onDownload, isDownloading }: FormatSelectorProps) => {
   const [format, setFormat] = useState<"video" | "audio">("video");
   const [quality, setQuality] = useState(videoQualities[1]);
   const [showQualities, setShowQualities] = useState(false);
@@ -94,9 +95,19 @@ const FormatSelector = ({ onDownload }: FormatSelectorProps) => {
         size="lg"
         className="w-full text-base py-6"
         onClick={() => onDownload(format, quality)}
+        disabled={isDownloading}
       >
-        <Download className="h-5 w-5 mr-2" />
-        Baixar {format === "video" ? "Vídeo" : "Áudio"}
+        {isDownloading ? (
+          <>
+            <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+            Processando...
+          </>
+        ) : (
+          <>
+            <Download className="h-5 w-5 mr-2" />
+            Baixar {format === "video" ? "Vídeo" : "Áudio"}
+          </>
+        )}
       </Button>
     </motion.div>
   );
