@@ -6,9 +6,9 @@ const corsHeaders = {
 };
 
 const COBALT_INSTANCES = [
-  'https://api.cobalt.tools',
-  'https://cobalt-api.kwiatekmiki.com',
-  'https://cobalt.api.timelessnesses.me',
+  'https://cobalt-api.meowing.de',
+  'https://cobalt-backend.canine.tools',
+  'https://capi.3kh0.net',
 ];
 
 serve(async (req) => {
