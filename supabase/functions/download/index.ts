@@ -5,11 +5,45 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const COBALT_INSTANCES = [
-  'https://cobalt-api.meowing.de',
-  'https://cobalt-backend.canine.tools',
-  'https://capi.3kh0.net',
-];
+async function getVideoInfo(videoId: string) {
+  // Fetch the YouTube watch page to extract video info
+  const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
+  const response = await fetch(watchUrl, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept-Language': 'en-US,en;q=0.9',
+    },
+  });
+
+  const html = await response.text();
+
+  // Extract ytInitialPlayerResponse
+  const playerResponseMatch = html.match(/var ytInitialPlayerResponse\s*=\s*(\{.+?\});/s);
+  if (!playerResponseMatch) {
+    // Try alternate pattern
+    const altMatch = html.match(/ytInitialPlayerResponse\s*=\s*(\{.+?\});/s);
+    if (!altMatch) {
+      throw new Error('Could not extract player response from YouTube page');
+    }
+    return JSON.parse(altMatch[1]);
+  }
+
+  return JSON.parse(playerResponseMatch[1]);
+}
+
+function extractFormats(playerResponse: any) {
+  const streamingData = playerResponse?.streamingData;
+  if (!streamingData) {
+    throw new Error('No streaming data available');
+  }
+
+  const formats = [
+    ...(streamingData.formats || []),
+    ...(streamingData.adaptiveFormats || []),
+  ];
+
+  return formats.filter((f: any) => f.url || f.signatureCipher);
+}
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -26,102 +60,108 @@ serve(async (req) => {
       );
     }
 
-    // Map quality strings to cobalt API values
-    const qualityMap: Record<string, string> = {
-      '2160p (4K)': '2160',
-      '1080p (Full HD)': '1080',
-      '720p (HD)': '720',
-      '480p': '480',
-      '360p': '360',
-    };
+    // Extract video ID
+    const videoIdMatch = url.match(/(?:v=|youtu\.be\/|shorts\/)([\w-]+)/);
+    if (!videoIdMatch) {
+      return new Response(
+        JSON.stringify({ error: 'URL do YouTube inválida' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
 
-    const bitrateMap: Record<string, string> = {
-      '320kbps': '320',
-      '256kbps': '256',
-      '192kbps': '192',
-      '128kbps': '128',
-    };
+    const videoId = videoIdMatch[1];
+    console.log(`Processing video: ${videoId}, format: ${format}, quality: ${quality}`);
+
+    const playerResponse = await getVideoInfo(videoId);
+    const formats = extractFormats(playerResponse);
 
     const isAudio = format === 'audio';
 
-    const cobaltBody: Record<string, unknown> = {
-      url,
-      downloadMode: isAudio ? 'audio' : 'auto',
-      filenameStyle: 'pretty',
+    // Quality mapping
+    const qualityMap: Record<string, number> = {
+      '2160p (4K)': 2160,
+      '1080p (Full HD)': 1080,
+      '720p (HD)': 720,
+      '480p': 480,
+      '360p': 360,
     };
 
+    const bitrateMap: Record<string, number> = {
+      '320kbps': 320000,
+      '256kbps': 256000,
+      '192kbps': 192000,
+      '128kbps': 128000,
+    };
+
+    let selectedFormat: any = null;
+
     if (isAudio) {
-      cobaltBody.audioFormat = 'mp3';
-      cobaltBody.audioBitrate = bitrateMap[quality] || '128';
+      // Find audio-only formats sorted by bitrate
+      const audioFormats = formats
+        .filter((f: any) => f.mimeType?.startsWith('audio/') && f.url)
+        .sort((a: any, b: any) => (b.averageBitrate || b.bitrate || 0) - (a.averageBitrate || a.bitrate || 0));
+
+      const targetBitrate = bitrateMap[quality] || 128000;
+
+      // Find closest bitrate
+      selectedFormat = audioFormats.find((f: any) => (f.averageBitrate || f.bitrate || 0) <= targetBitrate) || audioFormats[0];
     } else {
-      cobaltBody.videoQuality = qualityMap[quality] || '1080';
-      cobaltBody.youtubeVideoCodec = 'h264';
-    }
+      // Find video formats with audio (combined) first
+      const combinedFormats = formats
+        .filter((f: any) => f.mimeType?.startsWith('video/') && f.url && f.audioQuality)
+        .sort((a: any, b: any) => (b.height || 0) - (a.height || 0));
 
-    let lastError = '';
+      const targetHeight = qualityMap[quality] || 1080;
 
-    for (const instance of COBALT_INSTANCES) {
-      try {
-        console.log(`Trying cobalt instance: ${instance}`);
-        const response = await fetch(instance, {
-          method: 'POST',
-          headers: {
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(cobaltBody),
-        });
+      // Find best match at or below target quality
+      selectedFormat = combinedFormats.find((f: any) => (f.height || 0) <= targetHeight) || combinedFormats[0];
 
-        const data = await response.json();
-        console.log(`Response from ${instance}:`, JSON.stringify(data));
+      // If no combined format, try adaptive video
+      if (!selectedFormat) {
+        const videoFormats = formats
+          .filter((f: any) => f.mimeType?.startsWith('video/') && f.url)
+          .sort((a: any, b: any) => (b.height || 0) - (a.height || 0));
 
-        if (data.status === 'tunnel' || data.status === 'redirect') {
-          return new Response(
-            JSON.stringify({
-              status: 'success',
-              downloadUrl: data.url,
-              filename: data.filename || 'download',
-            }),
-            { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-          );
-        }
-
-        if (data.status === 'picker' && data.picker?.length > 0) {
-          return new Response(
-            JSON.stringify({
-              status: 'success',
-              downloadUrl: data.picker[0].url,
-              filename: 'download',
-            }),
-            { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-          );
-        }
-
-        if (data.status === 'error') {
-          lastError = data.error?.code || 'unknown error';
-          console.error(`Cobalt error from ${instance}:`, data.error);
-          continue;
-        }
-
-        lastError = `Unexpected response status: ${data.status}`;
-      } catch (e) {
-        lastError = e instanceof Error ? e.message : 'Instance error';
-        console.error(`Failed to reach ${instance}:`, lastError);
-        continue;
+        selectedFormat = videoFormats.find((f: any) => (f.height || 0) <= targetHeight) || videoFormats[0];
       }
     }
 
+    if (!selectedFormat || !selectedFormat.url) {
+      // Fallback: return any available format with a URL
+      const anyFormat = formats.find((f: any) => f.url);
+      if (!anyFormat) {
+        return new Response(
+          JSON.stringify({
+            status: 'error',
+            error: 'Nenhum formato de download disponível. O vídeo pode ter restrições.',
+          }),
+          { status: 422, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+      selectedFormat = anyFormat;
+    }
+
+    const title = playerResponse?.videoDetails?.title || 'download';
+    const ext = isAudio ? 'mp3' : 'mp4';
+    const filename = `${title.replace(/[^\w\s-]/g, '').trim()}.${ext}`;
+
+    console.log(`Selected format: ${selectedFormat.mimeType}, quality: ${selectedFormat.qualityLabel || selectedFormat.audioQuality}, url length: ${selectedFormat.url?.length}`);
+
     return new Response(
       JSON.stringify({
-        status: 'error',
-        error: `Não foi possível processar o download. ${lastError}`,
+        status: 'success',
+        downloadUrl: selectedFormat.url,
+        filename,
+        quality: selectedFormat.qualityLabel || selectedFormat.audioQuality || 'unknown',
+        mimeType: selectedFormat.mimeType,
       }),
-      { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   } catch (error) {
     console.error('Edge function error:', error);
+    const message = error instanceof Error ? error.message : 'Erro interno';
     return new Response(
-      JSON.stringify({ status: 'error', error: 'Erro interno do servidor' }),
+      JSON.stringify({ status: 'error', error: message }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }
