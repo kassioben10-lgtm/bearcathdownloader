@@ -2,47 +2,48 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
-async function getVideoInfo(videoId: string) {
-  // Fetch the YouTube watch page to extract video info
-  const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
-  const response = await fetch(watchUrl, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Accept-Language': 'en-US,en;q=0.9',
-    },
-  });
+const INVIDIOUS_INSTANCES = [
+  'https://inv.nadeko.net',
+  'https://invidious.nerdvpn.de',
+  'https://invidious.jing.rocks',
+  'https://iv.nboow.de',
+];
 
-  const html = await response.text();
+async function tryInvidiousInstance(instance: string, videoId: string) {
+  const url = `${instance}/api/v1/videos/${videoId}`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
 
-  // Extract ytInitialPlayerResponse
-  const playerResponseMatch = html.match(/var ytInitialPlayerResponse\s*=\s*(\{.+?\});/s);
-  if (!playerResponseMatch) {
-    // Try alternate pattern
-    const altMatch = html.match(/ytInitialPlayerResponse\s*=\s*(\{.+?\});/s);
-    if (!altMatch) {
-      throw new Error('Could not extract player response from YouTube page');
-    }
-    return JSON.parse(altMatch[1]);
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: { 'Accept': 'application/json' },
+    });
+    clearTimeout(timeout);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch (e) {
+    clearTimeout(timeout);
+    throw e;
   }
-
-  return JSON.parse(playerResponseMatch[1]);
 }
 
-function extractFormats(playerResponse: any) {
-  const streamingData = playerResponse?.streamingData;
-  if (!streamingData) {
-    throw new Error('No streaming data available');
+async function getVideoData(videoId: string) {
+  for (const instance of INVIDIOUS_INSTANCES) {
+    try {
+      console.log(`Trying instance: ${instance}`);
+      const data = await tryInvidiousInstance(instance, videoId);
+      if (data && (data.formatStreams?.length || data.adaptiveFormats?.length)) {
+        return data;
+      }
+    } catch (e) {
+      console.log(`Instance ${instance} failed: ${e.message}`);
+    }
   }
-
-  const formats = [
-    ...(streamingData.formats || []),
-    ...(streamingData.adaptiveFormats || []),
-  ];
-
-  return formats.filter((f: any) => f.url || f.signatureCipher);
+  throw new Error('Nenhuma instância disponível. Tente novamente mais tarde.');
 }
 
 serve(async (req) => {
@@ -60,7 +61,6 @@ serve(async (req) => {
       );
     }
 
-    // Extract video ID
     const videoIdMatch = url.match(/(?:v=|youtu\.be\/|shorts\/)([\w-]+)/);
     if (!videoIdMatch) {
       return new Response(
@@ -72,12 +72,9 @@ serve(async (req) => {
     const videoId = videoIdMatch[1];
     console.log(`Processing video: ${videoId}, format: ${format}, quality: ${quality}`);
 
-    const playerResponse = await getVideoInfo(videoId);
-    const formats = extractFormats(playerResponse);
-
+    const videoData = await getVideoData(videoId);
     const isAudio = format === 'audio';
 
-    // Quality mapping
     const qualityMap: Record<string, number> = {
       '2160p (4K)': 2160,
       '1080p (Full HD)': 1080,
@@ -86,74 +83,76 @@ serve(async (req) => {
       '360p': 360,
     };
 
-    const bitrateMap: Record<string, number> = {
-      '320kbps': 320000,
-      '256kbps': 256000,
-      '192kbps': 192000,
-      '128kbps': 128000,
-    };
-
     let selectedFormat: any = null;
+    const title = videoData.title || 'download';
 
     if (isAudio) {
-      // Find audio-only formats sorted by bitrate
-      const audioFormats = formats
-        .filter((f: any) => f.mimeType?.startsWith('audio/') && f.url)
-        .sort((a: any, b: any) => (b.averageBitrate || b.bitrate || 0) - (a.averageBitrate || a.bitrate || 0));
+      // Use adaptiveFormats for audio-only
+      const audioFormats = (videoData.adaptiveFormats || [])
+        .filter((f: any) => f.type?.startsWith('audio/') && f.url)
+        .sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
 
-      const targetBitrate = bitrateMap[quality] || 128000;
-
-      // Find closest bitrate
-      selectedFormat = audioFormats.find((f: any) => (f.averageBitrate || f.bitrate || 0) <= targetBitrate) || audioFormats[0];
+      selectedFormat = audioFormats[0];
     } else {
-      // Find video formats with audio (combined) first
-      const combinedFormats = formats
-        .filter((f: any) => f.mimeType?.startsWith('video/') && f.url && f.audioQuality)
-        .sort((a: any, b: any) => (b.height || 0) - (a.height || 0));
-
+      // Use formatStreams for combined video+audio
       const targetHeight = qualityMap[quality] || 1080;
 
-      // Find best match at or below target quality
-      selectedFormat = combinedFormats.find((f: any) => (f.height || 0) <= targetHeight) || combinedFormats[0];
+      const combinedFormats = (videoData.formatStreams || [])
+        .filter((f: any) => f.url)
+        .sort((a: any, b: any) => {
+          const hA = parseInt(f.resolution || f.qualityLabel || '0');
+          const hB = parseInt(f.resolution || f.qualityLabel || '0');
+          return hB - hA;
+        });
 
-      // If no combined format, try adaptive video
+      // Sort properly by extracting height
+      const sorted = (videoData.formatStreams || [])
+        .filter((f: any) => f.url)
+        .map((f: any) => {
+          const h = parseInt(f.qualityLabel || f.resolution || '0');
+          return { ...f, height: h };
+        })
+        .sort((a: any, b: any) => b.height - a.height);
+
+      // Find best match at or below target
+      selectedFormat = sorted.find((f: any) => f.height <= targetHeight) || sorted[0];
+
+      // If no combined, try adaptive video formats
       if (!selectedFormat) {
-        const videoFormats = formats
-          .filter((f: any) => f.mimeType?.startsWith('video/') && f.url)
-          .sort((a: any, b: any) => (b.height || 0) - (a.height || 0));
+        const adaptiveVideo = (videoData.adaptiveFormats || [])
+          .filter((f: any) => f.type?.startsWith('video/') && f.url)
+          .map((f: any) => {
+            const h = parseInt(f.qualityLabel || f.resolution || '0');
+            return { ...f, height: h };
+          })
+          .sort((a: any, b: any) => b.height - a.height);
 
-        selectedFormat = videoFormats.find((f: any) => (f.height || 0) <= targetHeight) || videoFormats[0];
+        selectedFormat = adaptiveVideo.find((f: any) => f.height <= targetHeight) || adaptiveVideo[0];
       }
     }
 
     if (!selectedFormat || !selectedFormat.url) {
-      // Fallback: return any available format with a URL
-      const anyFormat = formats.find((f: any) => f.url);
-      if (!anyFormat) {
-        return new Response(
-          JSON.stringify({
-            status: 'error',
-            error: 'Nenhum formato de download disponível. O vídeo pode ter restrições.',
-          }),
-          { status: 422, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
-      }
-      selectedFormat = anyFormat;
+      return new Response(
+        JSON.stringify({
+          status: 'error',
+          error: 'Nenhum formato disponível para este vídeo.',
+        }),
+        { status: 422, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
 
-    const title = playerResponse?.videoDetails?.title || 'download';
     const ext = isAudio ? 'mp3' : 'mp4';
     const filename = `${title.replace(/[^\w\s-]/g, '').trim()}.${ext}`;
 
-    console.log(`Selected format: ${selectedFormat.mimeType}, quality: ${selectedFormat.qualityLabel || selectedFormat.audioQuality}, url length: ${selectedFormat.url?.length}`);
+    console.log(`Selected: ${selectedFormat.type || selectedFormat.mimeType}, quality: ${selectedFormat.qualityLabel || selectedFormat.resolution || 'audio'}`);
 
     return new Response(
       JSON.stringify({
         status: 'success',
         downloadUrl: selectedFormat.url,
         filename,
-        quality: selectedFormat.qualityLabel || selectedFormat.audioQuality || 'unknown',
-        mimeType: selectedFormat.mimeType,
+        quality: selectedFormat.qualityLabel || selectedFormat.resolution || 'audio',
+        mimeType: selectedFormat.type || selectedFormat.mimeType,
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
