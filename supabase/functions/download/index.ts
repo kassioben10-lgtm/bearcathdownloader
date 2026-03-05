@@ -97,15 +97,6 @@ serve(async (req) => {
       // Use formatStreams for combined video+audio
       const targetHeight = qualityMap[quality] || 1080;
 
-      const combinedFormats = (videoData.formatStreams || [])
-        .filter((f: any) => f.url)
-        .sort((a: any, b: any) => {
-          const hA = parseInt(f.resolution || f.qualityLabel || '0');
-          const hB = parseInt(f.resolution || f.qualityLabel || '0');
-          return hB - hA;
-        });
-
-      // Sort properly by extracting height
       const sorted = (videoData.formatStreams || [])
         .filter((f: any) => f.url)
         .map((f: any) => {
