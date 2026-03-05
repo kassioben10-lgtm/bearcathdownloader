@@ -123,6 +123,10 @@ serve(async (req) => {
       cobaltBody.audioFormat = 'mp3';
     }
 
+    // Get API key from secrets
+    const apiKey = Deno.env.get('COBALT_API_KEY');
+    console.log(`API key configured: ${!!apiKey}`);
+
     // Dynamically fetch active instances
     const instances = await fetchActiveInstances();
     console.log(`Got ${instances.length} instances to try`);
@@ -131,7 +135,7 @@ serve(async (req) => {
     for (const instance of instances) {
       try {
         console.log(`Trying Cobalt instance: ${instance}`);
-        const data = await tryCobaltInstance(instance, cobaltBody);
+        const data = await tryCobaltInstance(instance, cobaltBody, apiKey || undefined);
         console.log(`Cobalt response status: ${data.status}`);
 
         if (data.status === 'tunnel' || data.status === 'redirect') {
