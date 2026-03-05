@@ -33,18 +33,23 @@ async function fetchActiveInstances(): Promise<string[]> {
   }
 }
 
-async function tryCobaltInstance(instance: string, body: Record<string, unknown>) {
+async function tryCobaltInstance(instance: string, body: Record<string, unknown>, apiKey?: string) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
 
   try {
+    const headers: Record<string, string> = {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    };
+    if (apiKey) {
+      headers['Authorization'] = `Api-Key ${apiKey}`;
+    }
+
     const res = await fetch(`${instance}/`, {
       method: 'POST',
       signal: controller.signal,
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
+      headers,
       body: JSON.stringify(body),
     });
     clearTimeout(timeout);
