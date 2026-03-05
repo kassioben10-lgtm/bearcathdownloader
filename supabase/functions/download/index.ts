@@ -33,18 +33,23 @@ async function fetchActiveInstances(): Promise<string[]> {
   }
 }
 
-async function tryCobaltInstance(instance: string, body: Record<string, unknown>) {
+async function tryCobaltInstance(instance: string, body: Record<string, unknown>, apiKey?: string) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
 
   try {
+    const headers: Record<string, string> = {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    };
+    if (apiKey) {
+      headers['Authorization'] = `Api-Key ${apiKey}`;
+    }
+
     const res = await fetch(`${instance}/`, {
       method: 'POST',
       signal: controller.signal,
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
+      headers,
       body: JSON.stringify(body),
     });
     clearTimeout(timeout);
@@ -118,6 +123,10 @@ serve(async (req) => {
       cobaltBody.audioFormat = 'mp3';
     }
 
+    // Get API key from secrets
+    const apiKey = Deno.env.get('COBALT_API_KEY');
+    console.log(`API key configured: ${!!apiKey}`);
+
     // Dynamically fetch active instances
     const instances = await fetchActiveInstances();
     console.log(`Got ${instances.length} instances to try`);
@@ -126,7 +135,7 @@ serve(async (req) => {
     for (const instance of instances) {
       try {
         console.log(`Trying Cobalt instance: ${instance}`);
-        const data = await tryCobaltInstance(instance, cobaltBody);
+        const data = await tryCobaltInstance(instance, cobaltBody, apiKey || undefined);
         console.log(`Cobalt response status: ${data.status}`);
 
         if (data.status === 'tunnel' || data.status === 'redirect') {
