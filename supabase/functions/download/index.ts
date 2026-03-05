@@ -5,17 +5,19 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
-const INVIDIOUS_INSTANCES = [
-  'https://inv.nadeko.net',
-  'https://invidious.nerdvpn.de',
-  'https://invidious.jing.rocks',
-  'https://iv.nboow.de',
+// Piped API instances - these expose a public API for YouTube data
+const PIPED_INSTANCES = [
+  'https://api.piped.private.coffee',
+  'https://pipedapi.kavin.rocks',
+  'https://pipedapi.r4fo.com',
+  'https://pipedapi.adminforge.de',
+  'https://api.piped.projectsegfau.lt',
 ];
 
-async function tryInvidiousInstance(instance: string, videoId: string) {
-  const url = `${instance}/api/v1/videos/${videoId}`;
+async function tryPipedInstance(instance: string, videoId: string) {
+  const url = `${instance}/streams/${videoId}`;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000);
+  const timeout = setTimeout(() => controller.abort(), 12000);
 
   try {
     const res = await fetch(url, {
@@ -32,18 +34,23 @@ async function tryInvidiousInstance(instance: string, videoId: string) {
 }
 
 async function getVideoData(videoId: string) {
-  for (const instance of INVIDIOUS_INSTANCES) {
+  const errors: string[] = [];
+  for (const instance of PIPED_INSTANCES) {
     try {
-      console.log(`Trying instance: ${instance}`);
-      const data = await tryInvidiousInstance(instance, videoId);
-      if (data && (data.formatStreams?.length || data.adaptiveFormats?.length)) {
+      console.log(`Trying Piped instance: ${instance}`);
+      const data = await tryPipedInstance(instance, videoId);
+      if (data && (data.videoStreams?.length || data.audioStreams?.length)) {
+        console.log(`Success with ${instance}`);
         return data;
       }
+      console.log(`${instance} returned no streams`);
     } catch (e) {
-      console.log(`Instance ${instance} failed: ${e.message}`);
+      const msg = e instanceof Error ? e.message : String(e);
+      console.log(`Instance ${instance} failed: ${msg}`);
+      errors.push(`${instance}: ${msg}`);
     }
   }
-  throw new Error('Nenhuma instância disponível. Tente novamente mais tarde.');
+  throw new Error(`Nenhuma instância disponível. Erros: ${errors.join('; ')}`);
 }
 
 serve(async (req) => {
@@ -83,46 +90,46 @@ serve(async (req) => {
       '360p': 360,
     };
 
-    let selectedFormat: any = null;
+    let selectedStream: any = null;
     const title = videoData.title || 'download';
 
     if (isAudio) {
-      // Use adaptiveFormats for audio-only
-      const audioFormats = (videoData.adaptiveFormats || [])
-        .filter((f: any) => f.type?.startsWith('audio/') && f.url)
+      // Piped returns audioStreams array with bitrate, url, mimeType, etc.
+      const audioStreams = (videoData.audioStreams || [])
+        .filter((s: any) => s.url)
         .sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
 
-      selectedFormat = audioFormats[0];
+      selectedStream = audioStreams[0];
     } else {
-      // Use formatStreams for combined video+audio
       const targetHeight = qualityMap[quality] || 1080;
 
-      const sorted = (videoData.formatStreams || [])
-        .filter((f: any) => f.url)
-        .map((f: any) => {
-          const h = parseInt(f.qualityLabel || f.resolution || '0');
-          return { ...f, height: h };
+      // Piped videoStreams have: url, format, quality (e.g. "720p"), videoOnly, etc.
+      // First try streams that are NOT video-only (have audio)
+      const combinedStreams = (videoData.videoStreams || [])
+        .filter((s: any) => s.url && !s.videoOnly)
+        .map((s: any) => {
+          const h = parseInt(s.quality || '0');
+          return { ...s, height: h };
         })
         .sort((a: any, b: any) => b.height - a.height);
 
-      // Find best match at or below target
-      selectedFormat = sorted.find((f: any) => f.height <= targetHeight) || sorted[0];
+      selectedStream = combinedStreams.find((s: any) => s.height <= targetHeight) || combinedStreams[0];
 
-      // If no combined, try adaptive video formats
-      if (!selectedFormat) {
-        const adaptiveVideo = (videoData.adaptiveFormats || [])
-          .filter((f: any) => f.type?.startsWith('video/') && f.url)
-          .map((f: any) => {
-            const h = parseInt(f.qualityLabel || f.resolution || '0');
-            return { ...f, height: h };
+      // Fallback to video-only if no combined streams
+      if (!selectedStream) {
+        const videoOnly = (videoData.videoStreams || [])
+          .filter((s: any) => s.url)
+          .map((s: any) => {
+            const h = parseInt(s.quality || '0');
+            return { ...s, height: h };
           })
           .sort((a: any, b: any) => b.height - a.height);
 
-        selectedFormat = adaptiveVideo.find((f: any) => f.height <= targetHeight) || adaptiveVideo[0];
+        selectedStream = videoOnly.find((s: any) => s.height <= targetHeight) || videoOnly[0];
       }
     }
 
-    if (!selectedFormat || !selectedFormat.url) {
+    if (!selectedStream || !selectedStream.url) {
       return new Response(
         JSON.stringify({
           status: 'error',
@@ -135,15 +142,15 @@ serve(async (req) => {
     const ext = isAudio ? 'mp3' : 'mp4';
     const filename = `${title.replace(/[^\w\s-]/g, '').trim()}.${ext}`;
 
-    console.log(`Selected: ${selectedFormat.type || selectedFormat.mimeType}, quality: ${selectedFormat.qualityLabel || selectedFormat.resolution || 'audio'}`);
+    console.log(`Selected: ${selectedStream.mimeType || selectedStream.format}, quality: ${selectedStream.quality || 'audio'}`);
 
     return new Response(
       JSON.stringify({
         status: 'success',
-        downloadUrl: selectedFormat.url,
+        downloadUrl: selectedStream.url,
         filename,
-        quality: selectedFormat.qualityLabel || selectedFormat.resolution || 'audio',
-        mimeType: selectedFormat.type || selectedFormat.mimeType,
+        quality: selectedStream.quality || 'audio',
+        mimeType: selectedStream.mimeType || selectedStream.format,
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
