@@ -5,10 +5,12 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
-// Cobalt instances with YouTube support (fetched from instances.cobalt.best)
+// Cobalt instances (from instances.cobalt.best) — try multiple
 const COBALT_INSTANCES = [
+  'https://cobalt-backend.canine.tools',
   'https://cobalt-api.meowing.de',
   'https://capi.3kh0.net',
+  'https://downloadapi.stuff.solutions',
 ];
 
 async function tryCobaltInstance(instance: string, body: Record<string, unknown>) {
