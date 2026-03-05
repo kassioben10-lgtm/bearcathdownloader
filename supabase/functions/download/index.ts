@@ -5,11 +5,33 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
-// Cobalt instances with YouTube support (fetched from instances.cobalt.best)
-const COBALT_INSTANCES = [
+// Fallback list — dynamically fetched list is preferred
+const FALLBACK_INSTANCES = [
+  'https://cobalt-backend.canine.tools',
   'https://cobalt-api.meowing.de',
   'https://capi.3kh0.net',
+  'https://downloadapi.stuff.solutions',
 ];
+
+async function fetchActiveInstances(): Promise<string[]> {
+  try {
+    const res = await fetch('https://instances.cobalt.best/api/instances', {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const instances = await res.json();
+    // Filter: online, has YouTube support (score > 0), prefer no auth
+    const urls: string[] = instances
+      .filter((i: any) => i.api_online && i.score > 0)
+      .sort((a: any, b: any) => (b.score || 0) - (a.score || 0))
+      .map((i: any) => i.api_url?.replace(/\/$/, ''))
+      .filter(Boolean);
+    return urls.length > 0 ? urls : FALLBACK_INSTANCES;
+  } catch (e) {
+    console.log('Failed to fetch instances list, using fallback:', e);
+    return FALLBACK_INSTANCES;
+  }
+}
 
 async function tryCobaltInstance(instance: string, body: Record<string, unknown>) {
   const controller = new AbortController();
@@ -27,7 +49,19 @@ async function tryCobaltInstance(instance: string, body: Record<string, unknown>
     });
     clearTimeout(timeout);
 
-    const data = await res.json();
+    const text = await res.text();
+    let data: any;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error(`Non-JSON response: ${text.substring(0, 100)}`);
+    }
+
+    // Check for auth errors specifically
+    if (data?.error?.code?.includes('auth') || (typeof data?.error === 'string' && data.error.includes('auth'))) {
+      throw new Error(data.error?.code || data.error || 'auth required');
+    }
+
     if (!res.ok) {
       throw new Error(data?.error?.code || data?.error || `HTTP ${res.status}`);
     }
@@ -65,7 +99,6 @@ serve(async (req) => {
 
     const isAudio = format === 'audio';
 
-    // Map quality strings to cobalt videoQuality values
     const qualityMap: Record<string, string> = {
       '2160p (4K)': '2160',
       '1080p (Full HD)': '1080',
@@ -85,8 +118,12 @@ serve(async (req) => {
       cobaltBody.audioFormat = 'mp3';
     }
 
+    // Dynamically fetch active instances
+    const instances = await fetchActiveInstances();
+    console.log(`Got ${instances.length} instances to try`);
+
     const errors: string[] = [];
-    for (const instance of COBALT_INSTANCES) {
+    for (const instance of instances) {
       try {
         console.log(`Trying Cobalt instance: ${instance}`);
         const data = await tryCobaltInstance(instance, cobaltBody);
@@ -118,7 +155,7 @@ serve(async (req) => {
         }
 
         if (data.status === 'error') {
-          throw new Error(data.error?.code || 'cobalt error');
+          throw new Error(data.error?.code || data.error || 'cobalt error');
         }
 
         throw new Error(`Unexpected status: ${data.status}`);
