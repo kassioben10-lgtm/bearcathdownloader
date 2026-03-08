@@ -92,25 +92,9 @@ const Index = () => {
       const contentType = response.headers.get('content-type') || '';
 
       if (contentType.includes('application/json')) {
+        // JSON means an error occurred
         const data = await response.json();
-        if (data.status === 'success' && data.downloadUrl) {
-          toast({
-            title: `Download em ${data.quality || 'auto'}`,
-            description: "Baixando arquivo...",
-          });
-          const dlRes = await fetch(data.downloadUrl);
-          const blob = await dlRes.blob();
-          const blobUrl = URL.createObjectURL(blob);
-          const link = document.createElement("a");
-          link.href = blobUrl;
-          link.download = data.filename || "download";
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          URL.revokeObjectURL(blobUrl);
-        } else {
-          throw new Error(data?.error || 'Erro desconhecido');
-        }
+        throw new Error(data?.error || 'Erro desconhecido');
       } else {
         // Got file stream — direct download!
         toast({

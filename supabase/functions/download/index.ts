@@ -21,10 +21,18 @@ function makeStreamResponse(fileRes: Response, filename: string): Response {
   });
 }
 
-function makeJsonResponse(downloadUrl: string, filename: string, quality: string, audioUrl?: string): Response {
+// Always stream through edge function to avoid CORS issues
+async function proxyDownload(url: string, filename: string, quality: string): Promise<Response> {
+  console.log(`Proxying download: ${quality} -> ${url.substring(0, 80)}...`);
+  const fileRes = await fetchWithUA(url);
+  if (fileRes.ok || fileRes.status === 206) {
+    return makeStreamResponse(fileRes, filename);
+  }
+  // If proxy fetch fails, return error (never return raw URL to client)
+  console.error(`Proxy fetch failed: ${fileRes.status}`);
   return new Response(
-    JSON.stringify({ status: 'success', downloadUrl, filename, quality, ...(audioUrl ? { audioUrl } : {}) }),
-    { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    JSON.stringify({ status: 'error', error: `Falha ao baixar o arquivo (HTTP ${fileRes.status})` }),
+    { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
   );
 }
 
@@ -72,12 +80,8 @@ async function tryCobalt(fullYtUrl: string, isAudio: boolean, cobaltQuality: str
 
     const filename = `download_${videoId}.${isAudio ? 'mp3' : 'mp4'}`;
 
-    if (mode === 'stream') {
-      const fileRes = await fetchWithUA(downloadUrl);
-      if (fileRes.ok) return makeStreamResponse(fileRes, filename);
-    }
-
-    return makeJsonResponse(downloadUrl, filename, cobaltQuality + 'p');
+    // Always proxy through edge function
+    return await proxyDownload(downloadUrl, filename, cobaltQuality + 'p');
   } catch (e) {
     console.error(`Cobalt error: ${e}`);
     return null;
@@ -147,12 +151,7 @@ async function trySearchDownload3(videoId: string, isAudio: boolean, mode: strin
 
     if (!downloadUrl) return null;
 
-    if (mode === 'stream') {
-      const fileRes = await fetchWithUA(downloadUrl);
-      if (fileRes.ok) return makeStreamResponse(fileRes, filename);
-    }
-
-    return makeJsonResponse(downloadUrl, filename, qualityLabel);
+    return await proxyDownload(downloadUrl, filename, qualityLabel);
   } catch (e) {
     console.error(`search-download3 error: ${e}`);
     return null;
@@ -199,12 +198,7 @@ async function tryYoutube86(videoId: string, isAudio: boolean, quality: string, 
 
     if (!best?.url) return null;
 
-    if (mode === 'stream') {
-      const fileRes = await fetchWithUA(best.url);
-      if (fileRes.ok || fileRes.status === 206) return makeStreamResponse(fileRes, filename);
-    }
-
-    return makeJsonResponse(best.url, filename, best.qualityLabel || best.label || 'auto');
+    return await proxyDownload(best.url, filename, best.qualityLabel || best.label || 'auto');
   } catch (e) {
     console.error(`youtube86 error: ${e}`);
     return null;
@@ -241,11 +235,7 @@ async function tryYtstream(videoId: string, isAudio: boolean, quality: string, m
       const best = audioFormats[0];
       if (!best?.url) return null;
 
-      if (mode === 'stream') {
-        const fileRes = await fetchWithUA(best.url);
-        if (fileRes.ok || fileRes.status === 206) return makeStreamResponse(fileRes, filename);
-      }
-      return makeJsonResponse(best.url, filename, 'audio');
+    return await proxyDownload(best.url, filename, 'audio');
     }
 
     // For video: prefer muxed (has audio), stream it through edge function
@@ -256,13 +246,7 @@ async function tryYtstream(videoId: string, isAudio: boolean, quality: string, m
 
     if (bestMuxed?.url) {
       console.log(`Streaming muxed format: ${bestMuxed.qualityLabel || bestMuxed.height || '?'}p`);
-      // Always stream muxed through the edge function to avoid CORS
-      const fileRes = await fetchWithUA(bestMuxed.url);
-      if (fileRes.ok || fileRes.status === 206) {
-        return makeStreamResponse(fileRes, filename);
-      }
-      // If stream fails, return URL as fallback
-      return makeJsonResponse(bestMuxed.url, filename, bestMuxed.qualityLabel || 'auto');
+      return await proxyDownload(bestMuxed.url, filename, bestMuxed.qualityLabel || 'auto');
     }
 
     return null;
