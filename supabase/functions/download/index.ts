@@ -21,14 +21,20 @@ function makeStreamResponse(fileRes: Response, filename: string): Response {
   });
 }
 
-// Always stream through edge function to avoid CORS issues
+async function fetchWithUA(url: string): Promise<Response> {
+  return fetch(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    },
+  });
+}
+
 async function proxyDownload(url: string, filename: string, quality: string): Promise<Response> {
   console.log(`Proxying download: ${quality} -> ${url.substring(0, 80)}...`);
   const fileRes = await fetchWithUA(url);
   if (fileRes.ok || fileRes.status === 206) {
     return makeStreamResponse(fileRes, filename);
   }
-  // If proxy fetch fails, return error (never return raw URL to client)
   console.error(`Proxy fetch failed: ${fileRes.status}`);
   return new Response(
     JSON.stringify({ status: 'error', error: `Falha ao baixar o arquivo (HTTP ${fileRes.status})` }),
@@ -36,18 +42,8 @@ async function proxyDownload(url: string, filename: string, quality: string): Pr
   );
 }
 
-async function fetchWithUA(url: string): Promise<Response> {
-  return fetch(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Referer': 'https://www.youtube.com/',
-      'Origin': 'https://www.youtube.com',
-    },
-  });
-}
-
 // Strategy 1: Cobalt proxy
-async function tryCobalt(fullYtUrl: string, isAudio: boolean, cobaltQuality: string, mode: string, videoId: string): Promise<Response | null> {
+async function tryCobalt(fullYtUrl: string, isAudio: boolean, cobaltQuality: string, videoId: string): Promise<Response | null> {
   const cobaltProxyUrl = Deno.env.get('COBALT_PROXY_URL');
   if (!cobaltProxyUrl) return null;
 
@@ -79,8 +75,6 @@ async function tryCobalt(fullYtUrl: string, isAudio: boolean, cobaltQuality: str
     if (!downloadUrl) return null;
 
     const filename = `download_${videoId}.${isAudio ? 'mp3' : 'mp4'}`;
-
-    // Always proxy through edge function
     return await proxyDownload(downloadUrl, filename, cobaltQuality + 'p');
   } catch (e) {
     console.error(`Cobalt error: ${e}`);
@@ -88,125 +82,93 @@ async function tryCobalt(fullYtUrl: string, isAudio: boolean, cobaltQuality: str
   }
 }
 
-// Strategy 2: youtube-search-download3 (returns merged high-quality)
-async function trySearchDownload3(videoId: string, isAudio: boolean, mode: string, rapidApiKey: string): Promise<Response | null> {
+// Strategy 2: social-download-all-in-one (returns CDN links, not IP-locked)
+async function trySocialDownload(fullYtUrl: string, isAudio: boolean, videoId: string, rapidApiKey: string): Promise<Response | null> {
   try {
-    console.log('Trying youtube-search-download3...');
-    const res = await fetch(
-      `https://youtube-search-download3.p.rapidapi.com/download?video=${videoId}`,
-      {
-        headers: {
-          'x-rapidapi-key': rapidApiKey,
-          'x-rapidapi-host': 'youtube-search-download3.p.rapidapi.com',
-        },
-      }
-    );
+    console.log('Trying social-download-all-in-one...');
+    const res = await fetch('https://social-download-all-in-one.p.rapidapi.com/v1/social/autolink', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-rapidapi-key': rapidApiKey,
+        'x-rapidapi-host': 'social-download-all-in-one.p.rapidapi.com',
+      },
+      body: JSON.stringify({ url: fullYtUrl }),
+    });
 
     if (!res.ok) {
-      console.error(`search-download3 HTTP ${res.status}`);
+      console.error(`social-download HTTP ${res.status}`);
       return null;
     }
 
     const data = await res.json();
-    console.log(`search-download3 response keys: ${JSON.stringify(data).substring(0, 500)}`);
+    console.log(`social-download response keys: ${Object.keys(data).join(', ')}`);
 
     let downloadUrl: string | null = null;
     let filename = `download_${videoId}.${isAudio ? 'mp3' : 'mp4'}`;
     let qualityLabel = 'auto';
 
-    if (data.title) {
-      filename = `${data.title.replace(/[^\w.\-()（）\s]/g, '_')}.${isAudio ? 'mp3' : 'mp4'}`;
-    }
-
-    if (isAudio) {
-      // Look for audio links
-      const audioLinks = (data.links || data.audio || []);
-      if (Array.isArray(audioLinks) && audioLinks.length > 0) {
-        const best = audioLinks.sort((a: any, b: any) => (b.size || b.bitrate || 0) - (a.size || a.bitrate || 0))[0];
-        downloadUrl = best.url || best.link;
-        qualityLabel = best.quality || best.label || 'audio';
-      } else if (data.mp3 || data.audio_url) {
-        downloadUrl = data.mp3 || data.audio_url;
-      }
-    } else {
-      // Look for video links - prefer highest quality
-      const videoLinks = (data.links || data.video || data.formats || []);
-      if (Array.isArray(videoLinks) && videoLinks.length > 0) {
-        // Sort by quality/size descending
-        const sorted = videoLinks
-          .filter((l: any) => l.url || l.link)
-          .sort((a: any, b: any) => {
-            const aQ = parseInt(a.quality || a.label || '0');
-            const bQ = parseInt(b.quality || b.label || '0');
-            return bQ - aQ;
-          });
-        if (sorted.length > 0) {
-          downloadUrl = sorted[0].url || sorted[0].link;
-          qualityLabel = sorted[0].quality || sorted[0].label || 'auto';
+    // The API returns medias array with url, quality, extension, type
+    const medias = data.medias || data.links || [];
+    
+    if (Array.isArray(medias) && medias.length > 0) {
+      if (isAudio) {
+        // Find audio format
+        const audioMedia = medias.find((m: any) => 
+          m.type === 'audio' || m.extension === 'mp3' || m.extension === 'm4a' || 
+          (m.quality && m.quality.toLowerCase().includes('audio'))
+        );
+        if (audioMedia) {
+          downloadUrl = audioMedia.url;
+          qualityLabel = 'audio';
+        } else {
+          // Fallback: get lowest quality video (smallest file, has audio)
+          const sorted = medias
+            .filter((m: any) => m.url)
+            .sort((a: any, b: any) => (parseInt(a.quality) || 0) - (parseInt(b.quality) || 0));
+          if (sorted.length > 0) {
+            downloadUrl = sorted[0].url;
+            qualityLabel = sorted[0].quality || 'auto';
+          }
         }
-      } else if (data.mp4 || data.video_url || data.url) {
-        downloadUrl = data.mp4 || data.video_url || data.url;
+      } else {
+        // Find best video quality
+        const videoMedias = medias
+          .filter((m: any) => m.url && m.type !== 'audio')
+          .sort((a: any, b: any) => (parseInt(b.quality) || 0) - (parseInt(a.quality) || 0));
+        
+        if (videoMedias.length > 0) {
+          downloadUrl = videoMedias[0].url;
+          qualityLabel = videoMedias[0].quality || 'auto';
+        }
       }
     }
 
-    if (!downloadUrl) return null;
+    // Also check for direct url field
+    if (!downloadUrl && data.url) {
+      downloadUrl = data.url;
+    }
 
-    return await proxyDownload(downloadUrl, filename, qualityLabel);
-  } catch (e) {
-    console.error(`search-download3 error: ${e}`);
-    return null;
-  }
-}
-
-// Strategy 3: youtube86 
-async function tryYoutube86(videoId: string, isAudio: boolean, quality: string, mode: string, rapidApiKey: string): Promise<Response | null> {
-  try {
-    console.log('Trying youtube86 API...');
-    const res = await fetch(
-      `https://youtube86.p.rapidapi.com/api/youtube/links/${videoId}`,
-      {
-        headers: {
-          'x-rapidapi-key': rapidApiKey,
-          'x-rapidapi-host': 'youtube86.p.rapidapi.com',
-        },
-      }
-    );
-
-    if (!res.ok) {
-      console.error(`youtube86 HTTP ${res.status}`);
+    if (!downloadUrl) {
+      console.log(`social-download: no suitable URL found in response`);
       return null;
     }
 
-    const data = await res.json();
-    let best: any = null;
-    let filename = `download_${videoId}.${isAudio ? 'mp3' : 'mp4'}`;
-    if (data.title) filename = `${data.title.replace(/[^\w.\-()（）\s]/g, '_')}.${isAudio ? 'mp3' : 'mp4'}`;
-
-    const qualityNum = parseInt(quality) || 1080;
-    const allFormats = data.urls || [];
-
-    if (isAudio) {
-      const audioFormats = allFormats.filter((f: any) => f.url && (f.isAudioOnly || f.mimeType?.includes('audio')));
-      audioFormats.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
-      best = audioFormats[0];
-    } else {
-      const muxed = allFormats.filter((f: any) => f.url && f.mimeType?.includes('video') && f.hasAudio !== false);
-      const target = muxed.length > 0 ? muxed : allFormats.filter((f: any) => f.url && f.mimeType?.includes('video'));
-      target.sort((a: any, b: any) => Math.abs((a.height || 0) - qualityNum) - Math.abs((b.height || 0) - qualityNum));
-      best = target[0];
+    // Check if URL is from CDN (not googlevideo) — proxy it
+    if (downloadUrl.includes('googlevideo.com')) {
+      console.log('social-download returned googlevideo URL, skipping (IP-locked)');
+      return null;
     }
 
-    if (!best?.url) return null;
-
-    return await proxyDownload(best.url, filename, best.qualityLabel || best.label || 'auto');
+    return await proxyDownload(downloadUrl, filename, qualityLabel);
   } catch (e) {
-    console.error(`youtube86 error: ${e}`);
+    console.error(`social-download error: ${e}`);
     return null;
   }
 }
 
-// Strategy 4: ytstream with adaptive formats (returns video+audio URLs separately for client-side merge)
-async function tryYtstream(videoId: string, isAudio: boolean, quality: string, mode: string, rapidApiKey: string): Promise<Response | null> {
+// Strategy 3: ytstream with muxed formats only
+async function tryYtstream(videoId: string, isAudio: boolean, quality: string, rapidApiKey: string): Promise<Response | null> {
   try {
     console.log('Trying ytstream...');
     const res = await fetch(
@@ -219,36 +181,42 @@ async function tryYtstream(videoId: string, isAudio: boolean, quality: string, m
       }
     );
 
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.error(`ytstream HTTP ${res.status}`);
+      return null;
+    }
 
     const data = await res.json();
-    const filename = `${(data.title || 'download').replace(/[^\w.\-()（）\s]/g, '_')}.${isAudio ? 'mp3' : 'mp4'}`;
-    const qualityNum = parseInt(quality) || 1080;
+    const title = (data.title || 'download').replace(/[^\w.\-()（）\s]/g, '_');
+    const filename = `${title}.${isAudio ? 'mp3' : 'mp4'}`;
 
-    if (isAudio) {
-      // Get best audio from adaptive formats
-      const audioFormats = [
-        ...(data.adaptiveFormats || []),
-        ...(data.formats || []),
-      ].filter((f: any) => f.url && f.mimeType?.includes('audio'));
-      audioFormats.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
-      const best = audioFormats[0];
-      if (!best?.url) return null;
-
-    return await proxyDownload(best.url, filename, 'audio');
+    // ytstream returns link/url fields that may be CDN-hosted
+    // Check for direct download links first
+    if (data.link) {
+      const links = Array.isArray(data.link) ? data.link : [data.link];
+      for (const l of links) {
+        const url = typeof l === 'string' ? l : l?.url;
+        if (url && !url.includes('googlevideo.com')) {
+          console.log('ytstream: found non-googlevideo link');
+          return await proxyDownload(url, filename, 'auto');
+        }
+      }
     }
 
-    // For video: prefer muxed (has audio), stream it through edge function
-    const muxed = (data.formats || [])
-      .filter((f: any) => f.url && f.mimeType?.includes('video'))
-      .sort((a: any, b: any) => (b.height || 0) - (a.height || 0));
-    const bestMuxed = muxed[0];
-
-    if (bestMuxed?.url) {
-      console.log(`Streaming muxed format: ${bestMuxed.qualityLabel || bestMuxed.height || '?'}p`);
-      return await proxyDownload(bestMuxed.url, filename, bestMuxed.qualityLabel || 'auto');
+    // Check formats for non-googlevideo URLs
+    const allFormats = [...(data.formats || []), ...(data.adaptiveFormats || [])];
+    for (const f of allFormats) {
+      if (f.url && !f.url.includes('googlevideo.com')) {
+        if (isAudio && f.mimeType?.includes('audio')) {
+          return await proxyDownload(f.url, filename, 'audio');
+        }
+        if (!isAudio && f.mimeType?.includes('video')) {
+          return await proxyDownload(f.url, filename, f.qualityLabel || 'auto');
+        }
+      }
     }
 
+    console.log('ytstream: all URLs are googlevideo (IP-locked), skipping');
     return null;
   } catch (e) {
     console.error(`ytstream error: ${e}`);
@@ -262,7 +230,7 @@ serve(async (req) => {
   }
 
   try {
-    const { url, format, quality, mode } = await req.json();
+    const { url, format, quality } = await req.json();
 
     if (!url) {
       return new Response(
@@ -289,25 +257,20 @@ serve(async (req) => {
     const errors: string[] = [];
 
     // 1. Cobalt
-    const r1 = await tryCobalt(fullYtUrl, isAudio, cobaltQuality, mode, videoId);
+    const r1 = await tryCobalt(fullYtUrl, isAudio, cobaltQuality, videoId);
     if (r1) return r1;
     errors.push('Cobalt failed');
 
     const rapidApiKey = Deno.env.get('RAPIDAPI_KEY');
     if (rapidApiKey) {
-      // 2. youtube-search-download3
-      const r2 = await trySearchDownload3(videoId, isAudio, mode, rapidApiKey);
+      // 2. social-download-all-in-one (CDN links)
+      const r2 = await trySocialDownload(fullYtUrl, isAudio, videoId, rapidApiKey);
       if (r2) return r2;
-      errors.push('search-download3 failed');
+      errors.push('social-download failed');
 
-      // 3. youtube86
-      const r3 = await tryYoutube86(videoId, isAudio, cobaltQuality, mode, rapidApiKey);
+      // 3. ytstream (only non-googlevideo URLs)
+      const r3 = await tryYtstream(videoId, isAudio, cobaltQuality, rapidApiKey);
       if (r3) return r3;
-      errors.push('youtube86 failed');
-
-      // 4. ytstream (adaptive + muxed fallback)
-      const r4 = await tryYtstream(videoId, isAudio, cobaltQuality, mode, rapidApiKey);
-      if (r4) return r4;
       errors.push('ytstream failed');
     } else {
       errors.push('RAPIDAPI_KEY not configured');
