@@ -248,52 +248,20 @@ async function tryYtstream(videoId: string, isAudio: boolean, quality: string, m
       return makeJsonResponse(best.url, filename, 'audio');
     }
 
-    // For video: try to get high-quality adaptive video + best audio
-    const adaptiveVideos = (data.adaptiveFormats || [])
-      .filter((f: any) => f.url && f.mimeType?.includes('video'))
-      .sort((a: any, b: any) => Math.abs((a.height || 0) - qualityNum) - Math.abs((b.height || 0) - qualityNum));
-
-    const adaptiveAudios = (data.adaptiveFormats || [])
-      .filter((f: any) => f.url && f.mimeType?.includes('audio'))
-      .sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
-
-    const bestVideo = adaptiveVideos[0];
-    const bestAudio = adaptiveAudios[0];
-
-    // Also check muxed formats as fallback
+    // For video: prefer muxed (has audio), stream it through edge function
     const muxed = (data.formats || [])
       .filter((f: any) => f.url && f.mimeType?.includes('video'))
       .sort((a: any, b: any) => (b.height || 0) - (a.height || 0));
     const bestMuxed = muxed[0];
 
-    // If we have adaptive video that's significantly better than muxed, return both URLs
-    if (bestVideo?.url && bestAudio?.url) {
-      const adaptiveHeight = bestVideo.height || 0;
-      const muxedHeight = bestMuxed?.height || 0;
-
-      if (adaptiveHeight > muxedHeight) {
-        console.log(`Returning adaptive: ${adaptiveHeight}p video + audio (muxed was ${muxedHeight}p)`);
-        // Return both URLs - client will handle
-        return new Response(
-          JSON.stringify({
-            status: 'success',
-            downloadUrl: bestVideo.url,
-            audioUrl: bestAudio.url,
-            filename,
-            quality: `${adaptiveHeight}p`,
-            needsMerge: true,
-          }),
-          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
-      }
-    }
-
-    // Fallback to muxed (lower quality but has audio)
     if (bestMuxed?.url) {
-      if (mode === 'stream') {
-        const fileRes = await fetchWithUA(bestMuxed.url);
-        if (fileRes.ok || fileRes.status === 206) return makeStreamResponse(fileRes, filename);
+      console.log(`Streaming muxed format: ${bestMuxed.qualityLabel || bestMuxed.height || '?'}p`);
+      // Always stream muxed through the edge function to avoid CORS
+      const fileRes = await fetchWithUA(bestMuxed.url);
+      if (fileRes.ok || fileRes.status === 206) {
+        return makeStreamResponse(fileRes, filename);
       }
+      // If stream fails, return URL as fallback
       return makeJsonResponse(bestMuxed.url, filename, bestMuxed.qualityLabel || 'auto');
     }
 
