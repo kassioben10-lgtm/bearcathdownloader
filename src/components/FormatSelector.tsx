@@ -8,7 +8,7 @@ interface FormatSelectorProps {
   isDownloading?: boolean;
 }
 
-const videoQualities = ["2160p (4K)", "1080p (Full HD)", "720p (HD)", "480p", "360p"];
+const videoQualities = ["720p (HD)", "480p", "360p"];
 const audioQualities = ["320kbps", "256kbps", "192kbps", "128kbps"];
 
 const FormatSelector = ({ onDownload, isDownloading }: FormatSelectorProps) => {
