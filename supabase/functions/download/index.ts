@@ -154,42 +154,35 @@ serve(async (req) => {
           best = audioFormats[0];
           console.log(`Audio candidates: ${audioFormats.length}, best bitrate: ${best?.bitrate}`);
         } else {
-          // For video: try adaptiveFormats first (higher quality), then muxed formats
+          // For video: always prefer muxed formats (video+audio combined)
+          // Adaptive formats are video-only (no audio) so only use as absolute last resort
           const allFormats = [
             ...(data.adaptiveFormats || []).map((f: any) => ({ ...f, _source: 'adaptive' })),
             ...(data.formats || []).map((f: any) => ({ ...f, _source: 'muxed' })),
           ].filter((f: any) => f.url && f.mimeType?.includes('video'));
 
-          // Log available qualities
           console.log(`Video candidates: ${allFormats.map((f: any) => `${f.qualityLabel || f.height || '?'}(${f._source})`).join(', ')}`);
 
-          // Prefer muxed (has audio) at or above target, then adaptive at target
+          // Muxed formats sorted by resolution (highest first)
           const muxed = allFormats
             .filter((f: any) => f._source === 'muxed')
             .sort((a: any, b: any) => (b.height || 0) - (a.height || 0));
 
-          const adaptive = allFormats
-            .filter((f: any) => f._source === 'adaptive')
-            .sort((a: any, b: any) => {
-              const aH = a.height || parseInt(a.qualityLabel) || 0;
-              const bH = b.height || parseInt(b.qualityLabel) || 0;
-              return Math.abs(aH - targetRes) - Math.abs(bH - targetRes);
-            });
-
-          // If target is <= 720p, prefer muxed (has audio); otherwise use adaptive (no audio but HD+)
+          // Always use the highest quality muxed format (includes audio)
           const bestMuxed = muxed[0];
-          const bestAdaptive = adaptive[0];
-          const bestMuxedHeight = bestMuxed?.height || parseInt(bestMuxed?.qualityLabel) || 0;
 
-          if (bestMuxedHeight >= targetRes && bestMuxed) {
+          if (bestMuxed) {
             best = bestMuxed;
-            console.log(`Using muxed format: ${best.qualityLabel || best.height}p`);
-          } else if (bestAdaptive) {
-            best = bestAdaptive;
-            console.log(`Using adaptive format: ${best.qualityLabel || best.height}p (video-only, no audio track)`);
-          } else if (bestMuxed) {
-            best = bestMuxed;
-            console.log(`Fallback to muxed: ${best.qualityLabel || best.height}p`);
+            console.log(`Using muxed format (video+audio): ${best.qualityLabel || best.height}p`);
+          } else {
+            // No muxed available — warn but use adaptive as fallback
+            const adaptive = allFormats
+              .filter((f: any) => f._source === 'adaptive')
+              .sort((a: any, b: any) => (b.height || 0) - (a.height || 0));
+            best = adaptive[0];
+            if (best) {
+              console.log(`WARNING: Using adaptive (no audio): ${best.qualityLabel || best.height}p`);
+            }
           }
         }
 
