@@ -85,14 +85,24 @@ const Index = () => {
           description: `Iniciando download: ${data.quality}`,
         });
 
-        // Start download directly without opening new tab
-        const link = document.createElement("a");
-        link.href = data.downloadUrl;
-        link.download = data.filename || "download";
-        link.style.display = "none";
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+        // Fetch as blob to force direct download without navigation
+        const filename = data.filename || `download.${format === 'audio' ? 'mp3' : 'mp4'}`;
+        try {
+          const response = await fetch(data.downloadUrl);
+          const blob = await response.blob();
+          const blobUrl = URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          link.href = blobUrl;
+          link.download = filename;
+          link.style.display = "none";
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(blobUrl);
+        } catch {
+          // Fallback: open URL directly
+          window.location.href = data.downloadUrl;
+        }
       } else {
         throw new Error(data?.error || "Erro desconhecido");
       }
