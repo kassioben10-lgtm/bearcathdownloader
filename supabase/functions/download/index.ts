@@ -30,126 +30,101 @@ serve(async (req) => {
     const videoId = videoIdMatch[1];
     const fullYtUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
-    const rapidApiKey = Deno.env.get('RAPIDAPI_KEY');
     const isAudio = format === 'audio';
     const errors: string[] = [];
 
-    // Strategy 1: SocialMediaDL (free, no API key, returns merged video+audio)
-    try {
-      console.log('Trying SocialMediaDL...');
-      const smdlRes = await fetch(
-        `https://socialmediadl.vercel.app/api/get-video-data?url=${encodeURIComponent(fullYtUrl)}`,
-        {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          },
-        }
-      );
+    // Quality mapping for Cobalt
+    const qualityMap: Record<string, string> = {
+      '2160p (4K)': '2160',
+      '1080p (Full HD)': '1080',
+      '720p (HD)': '720',
+      '480p': '480',
+      '360p': '360',
+    };
+    const cobaltQuality = qualityMap[quality] || '1080';
 
-      if (smdlRes.ok) {
-        const data = await smdlRes.json();
-        console.log(`SocialMediaDL response: ${JSON.stringify(data).substring(0, 800)}`);
-
-        if (data.status === 'success' && data.data?.media) {
-          const media = data.data.media;
-          const title = data.data.title || 'download';
-          const filename = `${title.replace(/[^\w.\-()（）\s]/g, '_')}.${isAudio ? 'mp3' : 'mp4'}`;
-
-          const qualityMap: Record<string, number> = {
-            '2160p (4K)': 2160, '1080p (Full HD)': 1080, '720p (HD)': 720,
-            '480p': 480, '360p': 360,
-          };
-          const targetRes = qualityMap[quality] || 1080;
-
-          // Filter by type and sort by quality
-          const candidates = media
-            .filter((m: any) => {
-              if (isAudio) return m.type === 'audio' || m.format === 'mp3' || m.format === 'm4a';
-              return m.type === 'video' || m.format === 'mp4';
-            })
-            .sort((a: any, b: any) => {
-              const aQ = parseInt(a.quality) || 0;
-              const bQ = parseInt(b.quality) || 0;
-              return Math.abs(aQ - targetRes) - Math.abs(bQ - targetRes);
-            });
-
-          const best = candidates[0] || media[0];
-          if (best?.url) {
-            console.log(`SocialMediaDL selected: ${best.quality || 'auto'}, format: ${best.format}`);
-            return await streamOrReturnUrl(best.url, filename, best.quality || 'auto', mode);
-          }
-        }
-        errors.push('SocialMediaDL: no media found');
-      } else {
-        errors.push(`SocialMediaDL: HTTP ${smdlRes.status}`);
-      }
-    } catch (e) {
-      errors.push(`SocialMediaDL: ${e instanceof Error ? e.message : String(e)}`);
-    }
-
-    // Strategy 2: youtube-video-download by insanemedia (RapidAPI)
-    if (rapidApiKey) {
+    // Strategy 1: Cobalt via Cloudflare Worker proxy
+    const cobaltProxyUrl = Deno.env.get('COBALT_PROXY_URL');
+    if (cobaltProxyUrl) {
       try {
-        console.log('Trying youtube-video-download...');
-        const res = await fetch(
-          `https://youtube-video-download.p.rapidapi.com/video?videourl=${encodeURIComponent(fullYtUrl)}`,
-          {
-            headers: {
-              'x-rapidapi-key': rapidApiKey,
-              'x-rapidapi-host': 'youtube-video-download.p.rapidapi.com',
-            },
-          }
-        );
+        console.log(`Trying Cobalt proxy: ${cobaltProxyUrl}`);
+        const cobaltRes = await fetch(cobaltProxyUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url: fullYtUrl,
+            downloadMode: isAudio ? 'audio' : 'auto',
+            videoQuality: cobaltQuality,
+            audioFormat: 'mp3',
+          }),
+        });
 
-        if (res.ok) {
-          const data = await res.json();
-          console.log(`yt-video-download keys: ${JSON.stringify(Object.keys(data))}`);
-          console.log(`yt-video-download data: ${JSON.stringify(data).substring(0, 800)}`);
+        if (cobaltRes.ok) {
+          const data = await cobaltRes.json();
+          console.log(`Cobalt response: ${JSON.stringify(data).substring(0, 500)}`);
 
-          const title = data.title || 'download';
-          const filename = `${title.replace(/[^\w.\-()（）\s]/g, '_')}.${isAudio ? 'mp3' : 'mp4'}`;
-
-          // This API typically returns links in various formats
+          // Cobalt returns { status: "tunnel"/"redirect", url: "..." } or { status: "picker", picker: [...] }
           let downloadUrl: string | null = null;
 
-          // Check for direct links
-          if (data.links) {
-            const links = Array.isArray(data.links) ? data.links : Object.values(data.links);
-            downloadUrl = findBestLink(links as any[], isAudio, quality);
-          }
-
-          // Check for formats/streams
-          if (!downloadUrl && data.formats) {
-            downloadUrl = findBestLink(data.formats, isAudio, quality);
-          }
-          if (!downloadUrl && data.streams) {
-            downloadUrl = findBestLink(data.streams, isAudio, quality);
-          }
-
-          // Direct URL fields
-          if (!downloadUrl) {
-            downloadUrl = data.url || data.downloadUrl || data.download_url || data.link;
+          if (data.status === 'tunnel' || data.status === 'redirect') {
+            downloadUrl = data.url;
+          } else if (data.status === 'picker' && data.picker?.length > 0) {
+            // Pick the first option (usually best quality)
+            downloadUrl = data.picker[0].url;
+          } else if (data.url) {
+            downloadUrl = data.url;
           }
 
           if (downloadUrl) {
-            console.log(`yt-video-download URL found`);
-            return await streamOrReturnUrl(downloadUrl, filename, 'auto', mode);
+            const filename = `download_${videoId}.${isAudio ? 'mp3' : 'mp4'}`;
+
+            if (mode === 'stream') {
+              console.log(`Streaming from Cobalt: ${downloadUrl.substring(0, 100)}`);
+              const fileRes = await fetch(downloadUrl, {
+                headers: {
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                },
+              });
+
+              if (fileRes.ok) {
+                return new Response(fileRes.body, {
+                  headers: {
+                    ...corsHeaders,
+                    'Content-Type': fileRes.headers.get('content-type') || 'application/octet-stream',
+                    'Content-Disposition': `attachment; filename="${filename}"`,
+                    'Content-Length': fileRes.headers.get('content-length') || '',
+                  },
+                });
+              }
+              console.log(`Cobalt stream failed ${fileRes.status}, returning URL`);
+            }
+
+            // Return URL for client download
+            return new Response(
+              JSON.stringify({ status: 'success', downloadUrl, filename, quality: cobaltQuality + 'p' }),
+              { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            );
           }
-          errors.push('yt-video-download: no URL found in response');
+
+          errors.push(`Cobalt: status=${data.status}, no URL found`);
+          if (data.error) errors.push(`Cobalt error: ${JSON.stringify(data.error)}`);
         } else {
-          const text = await res.text();
-          console.error(`yt-video-download error ${res.status}: ${text.substring(0, 200)}`);
-          errors.push(`yt-video-download: HTTP ${res.status}`);
+          const text = await cobaltRes.text();
+          console.error(`Cobalt proxy error ${cobaltRes.status}: ${text.substring(0, 300)}`);
+          errors.push(`Cobalt: HTTP ${cobaltRes.status} - ${text.substring(0, 100)}`);
         }
       } catch (e) {
-        errors.push(`yt-video-download: ${e instanceof Error ? e.message : String(e)}`);
+        errors.push(`Cobalt: ${e instanceof Error ? e.message : String(e)}`);
       }
+    } else {
+      errors.push('Cobalt: COBALT_PROXY_URL not configured');
     }
 
-    // Strategy 3: ytstream fallback (muxed formats with audio)
+    // Strategy 2: ytstream fallback (muxed, max ~360-720p but has audio)
+    const rapidApiKey = Deno.env.get('RAPIDAPI_KEY');
     if (rapidApiKey) {
       try {
-        console.log('Trying ytstream...');
+        console.log('Trying ytstream fallback...');
         const res = await fetch(
           `https://ytstream-download-youtube-videos.p.rapidapi.com/dl?id=${videoId}`,
           {
@@ -177,13 +152,34 @@ serve(async (req) => {
               .filter((f: any) => f.url && f.mimeType?.includes('video'))
               .sort((a: any, b: any) => (b.height || 0) - (a.height || 0));
             best = muxed[0];
-            console.log(`ytstream muxed: ${muxed.map((f: any) => `${f.qualityLabel || f.height}p`).join(', ')}`);
           }
 
           if (best?.url) {
-            return await streamOrReturnUrl(best.url, filename, best.qualityLabel || `${best.height}p`, mode);
+            if (mode === 'stream') {
+              const fileRes = await fetch(best.url, {
+                headers: {
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                  'Referer': 'https://www.youtube.com/',
+                  'Origin': 'https://www.youtube.com',
+                },
+              });
+              if (fileRes.ok || fileRes.status === 206) {
+                return new Response(fileRes.body, {
+                  headers: {
+                    ...corsHeaders,
+                    'Content-Type': fileRes.headers.get('content-type') || 'application/octet-stream',
+                    'Content-Disposition': `attachment; filename="${filename}"`,
+                    'Content-Length': fileRes.headers.get('content-length') || '',
+                  },
+                });
+              }
+            }
+            return new Response(
+              JSON.stringify({ status: 'success', downloadUrl: best.url, filename, quality: best.qualityLabel || 'auto' }),
+              { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            );
           }
-          errors.push('ytstream: no suitable format found');
+          errors.push('ytstream: no suitable format');
         } else {
           errors.push(`ytstream: HTTP ${res.status}`);
         }
@@ -204,67 +200,3 @@ serve(async (req) => {
     );
   }
 });
-
-function findBestLink(links: any[], isAudio: boolean, quality: string): string | null {
-  if (!Array.isArray(links) || links.length === 0) return null;
-
-  const qualityMap: Record<string, number> = {
-    '2160p (4K)': 2160, '1080p (Full HD)': 1080, '720p (HD)': 720,
-    '480p': 480, '360p': 360,
-  };
-  const targetRes = qualityMap[quality] || 1080;
-
-  const candidates = links.filter((l: any) => {
-    const url = l.url || l.link || l.downloadUrl || l.href;
-    if (!url) return false;
-    const mime = (l.mimeType || l.type || l.format || l.quality || '').toLowerCase();
-    if (isAudio) return mime.includes('audio') || mime.includes('mp3') || mime.includes('m4a');
-    return mime.includes('video') || mime.includes('mp4') || mime.includes('webm') || /\d+p/.test(mime);
-  });
-
-  if (candidates.length === 0) {
-    const any = links.find((l: any) => l.url || l.link || l.downloadUrl || l.href);
-    return any ? (any.url || any.link || any.downloadUrl || any.href) : null;
-  }
-
-  candidates.sort((a: any, b: any) => {
-    const aH = a.height || parseInt(a.quality) || parseInt(a.qualityLabel) || 0;
-    const bH = b.height || parseInt(b.quality) || parseInt(b.qualityLabel) || 0;
-    return Math.abs(aH - targetRes) - Math.abs(bH - targetRes);
-  });
-
-  const best = candidates[0];
-  return best.url || best.link || best.downloadUrl || best.href;
-}
-
-async function streamOrReturnUrl(downloadUrl: string, filename: string, quality: string, mode: string) {
-  if (mode === 'stream') {
-    console.log(`Streaming: ${downloadUrl.substring(0, 120)}`);
-    try {
-      const fileRes = await fetch(downloadUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        },
-      });
-
-      if (fileRes.ok) {
-        return new Response(fileRes.body, {
-          headers: {
-            ...corsHeaders,
-            'Content-Type': fileRes.headers.get('content-type') || 'application/octet-stream',
-            'Content-Disposition': `attachment; filename="${filename}"`,
-            'Content-Length': fileRes.headers.get('content-length') || '',
-          },
-        });
-      }
-      console.log(`Stream failed ${fileRes.status}, returning URL`);
-    } catch (e) {
-      console.log(`Stream error: ${e}`);
-    }
-  }
-
-  return new Response(
-    JSON.stringify({ status: 'success', downloadUrl, filename, quality }),
-    { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-  );
-}
