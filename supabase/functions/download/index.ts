@@ -5,6 +5,10 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
+async function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -41,103 +45,94 @@ serve(async (req) => {
     const isAudio = format === 'audio';
     const errors: string[] = [];
 
-    // Strategy 1: YouTube Video Downloader 4K/8K (returns merged video+audio)
+    // Strategy 1: youtube86 (task-based, returns merged video+audio)
     try {
-      console.log('Trying youtube-video-downloader-4k...');
-      const dlFormat = isAudio ? 'mp3' : 'mp4';
-      const apiUrl = `https://youtube-video-downloader-4k-and-8k-mp3.p.rapidapi.com/download.php?url=${encodeURIComponent(fullYtUrl)}&format=${dlFormat}&button=1`;
+      console.log('Trying youtube86...');
 
-      const dlRes = await fetch(apiUrl, {
+      // Step 1: Submit download task
+      const submitRes = await fetch('https://youtube86.p.rapidapi.com/api/youtube/links', {
+        method: 'POST',
         headers: {
+          'Content-Type': 'application/json',
           'x-rapidapi-key': rapidApiKey,
-          'x-rapidapi-host': 'youtube-video-downloader-4k-and-8k-mp3.p.rapidapi.com',
+          'x-rapidapi-host': 'youtube86.p.rapidapi.com',
         },
+        body: JSON.stringify({ url: fullYtUrl }),
       });
 
-      if (dlRes.ok) {
-        const data = await dlRes.json();
-        console.log(`4k-downloader keys: ${JSON.stringify(Object.keys(data))}`);
-        console.log(`4k-downloader data preview: ${JSON.stringify(data).substring(0, 800)}`);
+      if (submitRes.ok) {
+        const submitData = await submitRes.json();
+        console.log(`youtube86 response keys: ${JSON.stringify(Object.keys(submitData))}`);
+        console.log(`youtube86 response: ${JSON.stringify(submitData).substring(0, 1000)}`);
 
-        // Find best download link with quality matching
+        // The API may return links directly or a taskId for polling
         let downloadUrl: string | null = null;
         let filename = `download.${isAudio ? 'mp3' : 'mp4'}`;
         let selectedQuality = 'auto';
 
-        // Try to extract title
-        if (data.title) {
-          filename = `${data.title.replace(/[^\w.\-()（）\s]/g, '_')}.${isAudio ? 'mp3' : 'mp4'}`;
+        // Extract title if available
+        const title = submitData.title || submitData.videoTitle || '';
+        if (title) {
+          filename = `${title.replace(/[^\w.\-()（）\s]/g, '_')}.${isAudio ? 'mp3' : 'mp4'}`;
         }
 
-        // Check for links/formats array
-        const links = data.links || data.formats || data.urls || [];
-        if (Array.isArray(links) && links.length > 0) {
-          const qualityMap: Record<string, number> = {
-            '2160p (4K)': 2160, '1080p (Full HD)': 1080, '720p (HD)': 720,
-            '480p': 480, '360p': 360,
-          };
-          const targetRes = qualityMap[quality] || 1080;
+        // Check if we got a taskId (async processing)
+        if (submitData.taskId || submitData.task_id || submitData.id) {
+          const taskId = submitData.taskId || submitData.task_id || submitData.id;
+          console.log(`youtube86 taskId: ${taskId}, polling...`);
 
-          // Sort by closest to target quality
-          const sorted = links
-            .filter((l: any) => l.url || l.link || l.downloadUrl)
-            .sort((a: any, b: any) => {
-              const aH = a.height || parseInt(a.quality) || parseInt(a.qualityLabel) || 0;
-              const bH = b.height || parseInt(b.quality) || parseInt(b.qualityLabel) || 0;
-              return Math.abs(aH - targetRes) - Math.abs(bH - targetRes);
-            });
-
-          if (sorted.length > 0) {
-            const best = sorted[0];
-            downloadUrl = best.url || best.link || best.downloadUrl;
-            selectedQuality = best.quality || best.qualityLabel || 'auto';
-          }
-        }
-
-        // Try direct URL fields
-        if (!downloadUrl) {
-          downloadUrl = data.url || data.link || data.downloadUrl || data.download_url;
-        }
-
-        if (downloadUrl) {
-          if (mode === 'stream') {
-            console.log(`Streaming from 4k-downloader: ${downloadUrl.substring(0, 100)}`);
-            const fileRes = await fetch(downloadUrl, {
+          // Poll for completion (max 30 seconds)
+          for (let i = 0; i < 15; i++) {
+            await sleep(2000);
+            const statusRes = await fetch(`https://youtube86.p.rapidapi.com/api/youtube/links/${taskId}`, {
               headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'x-rapidapi-key': rapidApiKey,
+                'x-rapidapi-host': 'youtube86.p.rapidapi.com',
               },
             });
 
-            if (fileRes.ok) {
-              return new Response(fileRes.body, {
-                headers: {
-                  ...corsHeaders,
-                  'Content-Type': fileRes.headers.get('content-type') || 'application/octet-stream',
-                  'Content-Disposition': `attachment; filename="${filename}"`,
-                  'Content-Length': fileRes.headers.get('content-length') || '',
-                },
-              });
+            if (statusRes.ok) {
+              const statusData = await statusRes.json();
+              console.log(`youtube86 poll ${i + 1}: ${JSON.stringify(statusData).substring(0, 500)}`);
+
+              if (statusData.status === 'completed' || statusData.status === 'finished' || statusData.urls || statusData.links || statusData.downloadUrl) {
+                const links = statusData.urls || statusData.links || statusData.formats || [];
+                downloadUrl = extractBestUrl(links, isAudio, quality) || statusData.downloadUrl || statusData.url;
+                if (statusData.title) filename = `${statusData.title.replace(/[^\w.\-()（）\s]/g, '_')}.${isAudio ? 'mp3' : 'mp4'}`;
+                break;
+              }
+              if (statusData.status === 'failed' || statusData.status === 'error') {
+                errors.push(`youtube86: task failed - ${statusData.error || statusData.message || 'unknown'}`);
+                break;
+              }
             }
-            errors.push(`4k-downloader: stream failed ${fileRes.status}`);
-          } else {
-            return new Response(
-              JSON.stringify({ status: 'success', downloadUrl, filename, quality: selectedQuality }),
-              { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-            );
           }
         } else {
-          errors.push(`4k-downloader: no URL in response`);
+          // Direct response with links
+          const links = submitData.urls || submitData.links || submitData.formats || [];
+          if (Array.isArray(links) && links.length > 0) {
+            downloadUrl = extractBestUrl(links, isAudio, quality);
+          }
+          if (!downloadUrl) {
+            downloadUrl = submitData.downloadUrl || submitData.url || submitData.download_url;
+          }
+        }
+
+        if (downloadUrl) {
+          return streamOrReturnUrl(downloadUrl, filename, selectedQuality, mode);
+        } else {
+          errors.push('youtube86: no download URL found');
         }
       } else {
-        const text = await dlRes.text();
-        console.error(`4k-downloader error ${dlRes.status}: ${text.substring(0, 200)}`);
-        errors.push(`4k-downloader: HTTP ${dlRes.status}`);
+        const text = await submitRes.text();
+        console.error(`youtube86 error ${submitRes.status}: ${text.substring(0, 300)}`);
+        errors.push(`youtube86: HTTP ${submitRes.status}`);
       }
     } catch (e) {
-      errors.push(`4k-downloader: ${e instanceof Error ? e.message : String(e)}`);
+      errors.push(`youtube86: ${e instanceof Error ? e.message : String(e)}`);
     }
 
-    // Strategy 2: ytstream fallback (muxed formats with audio, max ~720p)
+    // Strategy 2: ytstream fallback (muxed formats, max ~720p but includes audio)
     try {
       console.log('Trying ytstream...');
       const res = await fetch(
@@ -152,8 +147,6 @@ serve(async (req) => {
 
       if (res.ok) {
         const data = await res.json();
-        console.log(`ytstream keys: ${JSON.stringify(Object.keys(data))}`);
-
         let best: any = null;
         const filename = `${(data.title || 'download').replace(/[^\w.\-()（）\s]/g, '_')}.${isAudio ? 'mp3' : 'mp4'}`;
 
@@ -174,47 +167,7 @@ serve(async (req) => {
         }
 
         if (best?.url) {
-          if (mode !== 'stream') {
-            return new Response(
-              JSON.stringify({
-                status: 'success',
-                downloadUrl: best.url,
-                filename,
-                quality: best.qualityLabel || `${best.height}p`,
-              }),
-              { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-            );
-          }
-
-          const fileRes = await fetch(best.url, {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-              'Referer': 'https://www.youtube.com/',
-              'Origin': 'https://www.youtube.com',
-            },
-          });
-
-          if (fileRes.ok || fileRes.status === 206) {
-            return new Response(fileRes.body, {
-              headers: {
-                ...corsHeaders,
-                'Content-Type': fileRes.headers.get('content-type') || 'application/octet-stream',
-                'Content-Disposition': `attachment; filename="${filename}"`,
-                'Content-Length': fileRes.headers.get('content-length') || '',
-              },
-            });
-          }
-
-          return new Response(
-            JSON.stringify({
-              status: 'success',
-              downloadUrl: best.url,
-              filename,
-              quality: best.qualityLabel || `${best.height}p`,
-              streamFailed: true,
-            }),
-            { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-          );
+          return streamOrReturnUrl(best.url, filename, best.qualityLabel || `${best.height}p`, mode);
         }
         errors.push('ytstream: no suitable format found');
       } else {
@@ -236,3 +189,71 @@ serve(async (req) => {
     );
   }
 });
+
+function extractBestUrl(links: any[], isAudio: boolean, quality: string): string | null {
+  if (!Array.isArray(links) || links.length === 0) return null;
+
+  const qualityMap: Record<string, number> = {
+    '2160p (4K)': 2160, '1080p (Full HD)': 1080, '720p (HD)': 720,
+    '480p': 480, '360p': 360,
+  };
+  const targetRes = qualityMap[quality] || 1080;
+
+  const candidates = links.filter((l: any) => {
+    const url = l.url || l.link || l.downloadUrl;
+    if (!url) return false;
+    const mime = (l.mimeType || l.type || l.format || '').toLowerCase();
+    if (isAudio) return mime.includes('audio') || mime.includes('mp3') || mime.includes('m4a');
+    return mime.includes('video') || mime.includes('mp4') || mime.includes('webm');
+  });
+
+  if (candidates.length === 0) {
+    // Try any link
+    const anyWithUrl = links.filter((l: any) => l.url || l.link || l.downloadUrl);
+    if (anyWithUrl.length > 0) return anyWithUrl[0].url || anyWithUrl[0].link || anyWithUrl[0].downloadUrl;
+    return null;
+  }
+
+  // Sort by closest to target quality
+  candidates.sort((a: any, b: any) => {
+    const aH = a.height || parseInt(a.quality) || parseInt(a.qualityLabel) || 0;
+    const bH = b.height || parseInt(b.quality) || parseInt(b.qualityLabel) || 0;
+    return Math.abs(aH - targetRes) - Math.abs(bH - targetRes);
+  });
+
+  const best = candidates[0];
+  return best.url || best.link || best.downloadUrl;
+}
+
+async function streamOrReturnUrl(downloadUrl: string, filename: string, quality: string, mode: string) {
+  if (mode === 'stream') {
+    console.log(`Streaming: ${downloadUrl.substring(0, 100)}`);
+    try {
+      const fileRes = await fetch(downloadUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        },
+      });
+
+      if (fileRes.ok) {
+        return new Response(fileRes.body, {
+          headers: {
+            ...corsHeaders,
+            'Content-Type': fileRes.headers.get('content-type') || 'application/octet-stream',
+            'Content-Disposition': `attachment; filename="${filename}"`,
+            'Content-Length': fileRes.headers.get('content-length') || '',
+          },
+        });
+      }
+      console.log(`Stream failed ${fileRes.status}, returning URL`);
+    } catch (e) {
+      console.log(`Stream error: ${e}`);
+    }
+  }
+
+  // Return URL for client
+  return new Response(
+    JSON.stringify({ status: 'success', downloadUrl, filename, quality }),
+    { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+  );
+}
