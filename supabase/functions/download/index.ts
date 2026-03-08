@@ -246,13 +246,7 @@ async function tryYtstream(videoId: string, isAudio: boolean, quality: string, m
 
     if (bestMuxed?.url) {
       console.log(`Streaming muxed format: ${bestMuxed.qualityLabel || bestMuxed.height || '?'}p`);
-      // Always stream muxed through the edge function to avoid CORS
-      const fileRes = await fetchWithUA(bestMuxed.url);
-      if (fileRes.ok || fileRes.status === 206) {
-        return makeStreamResponse(fileRes, filename);
-      }
-      // If stream fails, return URL as fallback
-      return makeJsonResponse(bestMuxed.url, filename, bestMuxed.qualityLabel || 'auto');
+      return await proxyDownload(bestMuxed.url, filename, bestMuxed.qualityLabel || 'auto');
     }
 
     return null;
