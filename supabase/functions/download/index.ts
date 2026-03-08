@@ -50,7 +50,7 @@ serve(async (req) => {
         console.log(`Trying Cobalt proxy: ${cobaltProxyUrl}`);
         const cobaltRes = await fetch(cobaltProxyUrl, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
           body: JSON.stringify({
             url: fullYtUrl,
             downloadMode: isAudio ? 'audio' : 'auto',
