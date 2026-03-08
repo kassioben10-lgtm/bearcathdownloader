@@ -73,46 +73,46 @@ const Index = () => {
     });
 
     try {
-      const { data, error } = await supabase.functions.invoke("download", {
-        body: { url: currentUrl, format, quality },
+      // Single call with mode=stream — downloads and streams in one request
+      const downloadUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/download`;
+      const response = await fetch(downloadUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+        },
+        body: JSON.stringify({ url: currentUrl, format, quality, mode: 'stream' }),
       });
 
-      if (error) throw error;
-
-      if (data?.status === "success" && data?.downloadUrl) {
-        toast({
-          title: "Download pronto!",
-          description: `Baixando: ${data.quality}`,
-        });
-
-        // Proxy download through edge function to force attachment
-        const filename = data.filename || `download.${format === 'audio' ? 'mp3' : 'mp4'}`;
-        const proxyUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/download-proxy`;
-        
-        const proxyRes = await fetch(proxyUrl, {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-          },
-          body: JSON.stringify({ downloadUrl: data.downloadUrl, filename }),
-        });
-
-        if (!proxyRes.ok) throw new Error("Erro ao baixar arquivo");
-
-        const blob = await proxyRes.blob();
-        const blobUrl = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.href = blobUrl;
-        link.download = filename;
-        link.style.display = "none";
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(blobUrl);
-      } else {
-        throw new Error(data?.error || "Erro desconhecido");
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData?.error || `Erro ${response.status}`);
       }
+
+      // Check if response is a file stream (not JSON error)
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const errData = await response.json();
+        throw new Error(errData?.error || 'Erro desconhecido');
+      }
+
+      toast({
+        title: "Download pronto!",
+        description: "Arquivo sendo baixado...",
+      });
+
+      const blob = await response.blob();
+      const filename = response.headers.get('content-disposition')?.match(/filename="(.+)"/)?.[1] 
+        || `download.${format === 'audio' ? 'mp3' : 'mp4'}`;
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = filename;
+      link.style.display = "none";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(blobUrl);
     } catch (err: any) {
       console.error("Download error:", err);
       toast({

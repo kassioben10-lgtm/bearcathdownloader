@@ -5,13 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
-// Try multiple RapidAPI YouTube download endpoints
 const RAPIDAPI_ENDPOINTS = [
-  {
-    name: 'youtube-video-download-api1',
-    host: 'youtube-video-download-api1.p.rapidapi.com',
-    buildUrl: (videoUrl: string) => `https://youtube-video-download-api1.p.rapidapi.com/?url=${encodeURIComponent(videoUrl)}`,
-  },
   {
     name: 'ytstream-download-youtube-videos',
     host: 'ytstream-download-youtube-videos.p.rapidapi.com',
@@ -22,49 +16,13 @@ const RAPIDAPI_ENDPOINTS = [
     },
   },
   {
-    name: 'yt-video-download',
-    host: 'yt-video-download.p.rapidapi.com',
-    buildUrl: (videoUrl: string) => `https://yt-video-download.p.rapidapi.com/downloads/mp4?url=${encodeURIComponent(videoUrl)}`,
+    name: 'youtube-video-download-api1',
+    host: 'youtube-video-download-api1.p.rapidapi.com',
+    buildUrl: (videoUrl: string) => `https://youtube-video-download-api1.p.rapidapi.com/?url=${encodeURIComponent(videoUrl)}`,
   },
 ];
 
-async function tryRapidApiEndpoint(
-  endpoint: typeof RAPIDAPI_ENDPOINTS[0],
-  videoUrl: string,
-  apiKey: string,
-): Promise<any> {
-  const url = endpoint.buildUrl(videoUrl);
-  console.log(`Trying ${endpoint.name}: ${url}`);
-
-  const res = await fetch(url, {
-    method: 'GET',
-    headers: {
-      'x-rapidapi-key': apiKey,
-      'x-rapidapi-host': endpoint.host,
-    },
-  });
-
-  const text = await res.text();
-
-  if (!res.ok) {
-    console.error(`${endpoint.name} error ${res.status}: ${text.substring(0, 200)}`);
-    throw new Error(`${endpoint.name}: HTTP ${res.status} - ${text.substring(0, 100)}`);
-  }
-
-  let data: any;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    throw new Error(`${endpoint.name}: Non-JSON response`);
-  }
-
-  return { data, endpointName: endpoint.name };
-}
-
 function extractDownloadUrl(data: any, targetRes: number, isAudio: boolean): { url: string; quality: string } | null {
-  // Try various response formats
-
-  // Format: { formats: [...] }
   if (data.formats && Array.isArray(data.formats)) {
     const candidates = data.formats
       .filter((f: any) => f.url && (isAudio ? f.mimeType?.includes('audio') : f.mimeType?.includes('video')))
@@ -78,7 +36,6 @@ function extractDownloadUrl(data: any, targetRes: number, isAudio: boolean): { u
     }
   }
 
-  // Format: { adaptiveFormats: [...] }
   if (data.adaptiveFormats && Array.isArray(data.adaptiveFormats)) {
     const candidates = data.adaptiveFormats
       .filter((f: any) => f.url && (isAudio ? f.mimeType?.includes('audio') : f.mimeType?.includes('video')))
@@ -92,7 +49,6 @@ function extractDownloadUrl(data: any, targetRes: number, isAudio: boolean): { u
     }
   }
 
-  // Format: { links: { "720": { url } } }
   if (data.links && typeof data.links === 'object') {
     const entries = Object.entries(data.links) as [string, any][];
     const sorted = entries
@@ -103,13 +59,9 @@ function extractDownloadUrl(data: any, targetRes: number, isAudio: boolean): { u
     }
   }
 
-  // Format: direct url
   if (data.url) return { url: data.url, quality: 'default' };
   if (data.mp4) return { url: typeof data.mp4 === 'string' ? data.mp4 : data.mp4?.url, quality: 'mp4' };
   if (data.mp3 && isAudio) return { url: typeof data.mp3 === 'string' ? data.mp3 : data.mp3?.url, quality: 'audio' };
-  if (data.audio?.url && isAudio) return { url: data.audio.url, quality: 'audio' };
-
-  // Format: { status: "ok", link: "..." }
   if (data.link) return { url: data.link, quality: 'default' };
 
   return null;
@@ -121,7 +73,7 @@ serve(async (req) => {
   }
 
   try {
-    const { url, format, quality } = await req.json();
+    const { url, format, quality, mode } = await req.json();
 
     if (!url) {
       return new Response(
@@ -146,60 +98,85 @@ serve(async (req) => {
       );
     }
 
-    // Log key prefix for debugging (safe - only first 8 chars)
-    console.log(`API key prefix: ${rapidApiKey.substring(0, 8)}...`);
-    console.log(`Processing: ${url}, format: ${format}, quality: ${quality}`);
-
     const isAudio = format === 'audio';
     const qualityMap: Record<string, number> = {
-      '2160p (4K)': 2160,
-      '1080p (Full HD)': 1080,
-      '720p (HD)': 720,
-      '480p': 480,
-      '360p': 360,
+      '2160p (4K)': 2160, '1080p (Full HD)': 1080, '720p (HD)': 720, '480p': 480, '360p': 360,
     };
     const targetRes = qualityMap[quality] || 1080;
 
     const errors: string[] = [];
     for (const endpoint of RAPIDAPI_ENDPOINTS) {
       try {
-        const { data, endpointName } = await tryRapidApiEndpoint(endpoint, url, rapidApiKey);
-        console.log(`${endpointName} response keys: ${Object.keys(data).join(', ')}`);
+        const apiUrl = endpoint.buildUrl(url);
+        console.log(`Trying ${endpoint.name}: ${apiUrl}`);
 
-        const result = extractDownloadUrl(data, targetRes, isAudio);
-        if (result) {
-          return new Response(
-            JSON.stringify({
-              status: 'success',
-              downloadUrl: result.url,
-              filename: `${data.title || 'download'}.${isAudio ? 'mp3' : 'mp4'}`,
-              quality: result.quality,
-            }),
-            { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-          );
+        const res = await fetch(apiUrl, {
+          headers: { 'x-rapidapi-key': rapidApiKey, 'x-rapidapi-host': endpoint.host },
+        });
+
+        if (!res.ok) {
+          const text = await res.text();
+          console.error(`${endpoint.name} error ${res.status}: ${text.substring(0, 200)}`);
+          errors.push(`${endpoint.name}: HTTP ${res.status}`);
+          continue;
         }
 
-        // Log full response structure for debugging
-        console.log(`${endpointName} data structure: ${JSON.stringify(data).substring(0, 500)}`);
-        errors.push(`${endpointName}: no download URL found in response`);
+        const data = await res.json();
+        const result = extractDownloadUrl(data, targetRes, isAudio);
+
+        if (!result) {
+          errors.push(`${endpoint.name}: no download URL found`);
+          continue;
+        }
+
+        const filename = `${(data.title || 'download').replace(/[^\w.\-()（）\s]/g, '_')}.${isAudio ? 'mp3' : 'mp4'}`;
+
+        // mode=stream: proxy the file directly with Content-Disposition
+        if (mode === 'stream') {
+          console.log(`Streaming ${result.quality} from ${endpoint.name}`);
+          const videoRes = await fetch(result.url, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              'Accept': '*/*',
+              'Referer': 'https://www.youtube.com/',
+              'Origin': 'https://www.youtube.com',
+            },
+          });
+
+          if (!videoRes.ok) {
+            console.error(`Stream fetch failed: ${videoRes.status}`);
+            errors.push(`${endpoint.name}: stream failed ${videoRes.status}`);
+            continue;
+          }
+
+          return new Response(videoRes.body, {
+            headers: {
+              ...corsHeaders,
+              'Content-Type': videoRes.headers.get('content-type') || 'application/octet-stream',
+              'Content-Disposition': `attachment; filename="${filename}"`,
+              'Content-Length': videoRes.headers.get('content-length') || '',
+            },
+          });
+        }
+
+        // Default: return URL info (legacy)
+        return new Response(
+          JSON.stringify({ status: 'success', downloadUrl: result.url, filename, quality: result.quality }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        errors.push(msg);
+        errors.push(e instanceof Error ? e.message : String(e));
       }
     }
 
     return new Response(
-      JSON.stringify({
-        status: 'error',
-        error: `Nenhuma API disponível. Erros: ${errors.join('; ')}`,
-      }),
+      JSON.stringify({ status: 'error', error: `Nenhuma API disponível. Erros: ${errors.join('; ')}` }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   } catch (error) {
     console.error('Edge function error:', error);
-    const message = error instanceof Error ? error.message : 'Erro interno';
     return new Response(
-      JSON.stringify({ status: 'error', error: message }),
+      JSON.stringify({ status: 'error', error: error instanceof Error ? error.message : 'Erro interno' }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }
