@@ -198,12 +198,7 @@ async function tryYoutube86(videoId: string, isAudio: boolean, quality: string, 
 
     if (!best?.url) return null;
 
-    if (mode === 'stream') {
-      const fileRes = await fetchWithUA(best.url);
-      if (fileRes.ok || fileRes.status === 206) return makeStreamResponse(fileRes, filename);
-    }
-
-    return makeJsonResponse(best.url, filename, best.qualityLabel || best.label || 'auto');
+    return await proxyDownload(best.url, filename, best.qualityLabel || best.label || 'auto');
   } catch (e) {
     console.error(`youtube86 error: ${e}`);
     return null;
