@@ -235,11 +235,7 @@ async function tryYtstream(videoId: string, isAudio: boolean, quality: string, m
       const best = audioFormats[0];
       if (!best?.url) return null;
 
-      if (mode === 'stream') {
-        const fileRes = await fetchWithUA(best.url);
-        if (fileRes.ok || fileRes.status === 206) return makeStreamResponse(fileRes, filename);
-      }
-      return makeJsonResponse(best.url, filename, 'audio');
+    return await proxyDownload(best.url, filename, 'audio');
     }
 
     // For video: prefer muxed (has audio), stream it through edge function
