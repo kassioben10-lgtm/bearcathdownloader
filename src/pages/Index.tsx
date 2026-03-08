@@ -113,9 +113,6 @@ const Index = () => {
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(blobUrl);
-      } else {
-        throw new Error(data?.error || "Erro desconhecido");
-      }
     } catch (err: any) {
       console.error("Download error:", err);
       toast({
