@@ -42,16 +42,19 @@ async function proxyDownload(url: string, filename: string, quality: string): Pr
   );
 }
 
-// Strategy 1: Cobalt proxy
-async function tryCobalt(fullYtUrl: string, isAudio: boolean, cobaltQuality: string, videoId: string): Promise<Response | null> {
-  const cobaltProxyUrl = Deno.env.get('COBALT_PROXY_URL');
-  if (!cobaltProxyUrl) return null;
-
+// Try a single cobalt instance
+async function tryCobaltInstance(apiUrl: string, fullYtUrl: string, isAudio: boolean, cobaltQuality: string, videoId: string, apiKey?: string): Promise<Response | null> {
   try {
-    console.log(`Trying Cobalt proxy: ${cobaltProxyUrl}`);
-    const cobaltRes = await fetch(cobaltProxyUrl, {
+    console.log(`Trying Cobalt: ${apiUrl}`);
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    };
+    if (apiKey) headers['Authorization'] = `Api-Key ${apiKey}`;
+
+    const cobaltRes = await fetch(apiUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      headers,
       body: JSON.stringify({
         url: fullYtUrl,
         downloadMode: isAudio ? 'audio' : 'auto',
@@ -61,7 +64,7 @@ async function tryCobalt(fullYtUrl: string, isAudio: boolean, cobaltQuality: str
     });
 
     if (!cobaltRes.ok) {
-      console.error(`Cobalt error ${cobaltRes.status}`);
+      console.error(`Cobalt ${apiUrl} error ${cobaltRes.status}`);
       return null;
     }
 
@@ -77,9 +80,36 @@ async function tryCobalt(fullYtUrl: string, isAudio: boolean, cobaltQuality: str
     const filename = `download_${videoId}.${isAudio ? 'mp3' : 'mp4'}`;
     return await proxyDownload(downloadUrl, filename, cobaltQuality + 'p');
   } catch (e) {
-    console.error(`Cobalt error: ${e}`);
+    console.error(`Cobalt ${apiUrl} error: ${e}`);
     return null;
   }
+}
+
+// Strategy 1: Try multiple Cobalt instances (user tunnel + public fallbacks)
+async function tryCobalt(fullYtUrl: string, isAudio: boolean, cobaltQuality: string, videoId: string): Promise<Response | null> {
+  const cobaltApiKey = Deno.env.get('COBALT_API_KEY');
+  
+  // Build list of instances to try
+  const instances: { url: string; key?: string }[] = [];
+  
+  // User's own tunnel first
+  const userProxy = Deno.env.get('COBALT_PROXY_URL');
+  if (userProxy) {
+    instances.push({ url: userProxy, key: cobaltApiKey || undefined });
+  }
+
+  // Public community instances (high availability, no auth needed)
+  instances.push(
+    { url: 'https://cobalt-api.meowing.de' },
+    { url: 'https://cobalt-backend.canine.tools' },
+    { url: 'https://kityune.imput.net' },
+  );
+
+  for (const inst of instances) {
+    const result = await tryCobaltInstance(inst.url, fullYtUrl, isAudio, cobaltQuality, videoId, inst.key);
+    if (result) return result;
+  }
+  return null;
 }
 
 // Strategy 2: social-download-all-in-one (returns CDN links, not IP-locked)
