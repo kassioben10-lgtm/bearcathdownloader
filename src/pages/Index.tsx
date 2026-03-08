@@ -95,24 +95,54 @@ const Index = () => {
         const data = await response.json();
         if (data.status === 'success' && data.downloadUrl) {
           if (data.needsMerge && data.audioUrl) {
-            // Separate video+audio streams - download video (high quality)
+            // Separate streams - download both video and audio
             toast({
               title: `Download em ${data.quality || 'HD'}`,
-              description: "Baixando vídeo em alta qualidade...",
+              description: "Baixando vídeo e áudio separadamente (2 arquivos)...",
+            });
+            
+            // Download video
+            const videoBlob = await fetch(data.downloadUrl).then(r => r.blob());
+            const videoBlobUrl = URL.createObjectURL(videoBlob);
+            const videoLink = document.createElement("a");
+            videoLink.href = videoBlobUrl;
+            videoLink.download = data.filename || `video_${Date.now()}.mp4`;
+            document.body.appendChild(videoLink);
+            videoLink.click();
+            document.body.removeChild(videoLink);
+            URL.revokeObjectURL(videoBlobUrl);
+
+            // Download audio
+            const audioBaseName = (data.filename || 'download').replace(/\.[^.]+$/, '');
+            const audioBlob = await fetch(data.audioUrl).then(r => r.blob());
+            const audioBlobUrl = URL.createObjectURL(audioBlob);
+            const audioLink = document.createElement("a");
+            audioLink.href = audioBlobUrl;
+            audioLink.download = `${audioBaseName}_audio.m4a`;
+            document.body.appendChild(audioLink);
+            audioLink.click();
+            document.body.removeChild(audioLink);
+            URL.revokeObjectURL(audioBlobUrl);
+
+            toast({
+              title: "Downloads concluídos!",
+              description: "Vídeo e áudio baixados. Use um programa como VLC ou HandBrake para juntar os arquivos.",
             });
           } else {
             toast({
               title: `Download em ${data.quality || 'auto'}`,
-              description: "Se o vídeo abrir no navegador, clique com botão direito → Salvar como...",
+              description: "Baixando arquivo...",
             });
+            const blob = await fetch(data.downloadUrl).then(r => r.blob());
+            const blobUrl = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = blobUrl;
+            link.download = data.filename || "download";
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(blobUrl);
           }
-          const link = document.createElement("a");
-          link.href = data.downloadUrl;
-          link.download = data.filename || "download";
-          link.style.display = "none";
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
         } else {
           throw new Error(data?.error || 'Erro desconhecido');
         }
