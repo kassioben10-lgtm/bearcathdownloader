@@ -195,6 +195,52 @@ serve(async (req) => {
 
         if (best?.url) {
           console.log(`Selected: ${best.qualityLabel || best.height || 'audio'}, bitrate: ${best.bitrate}, mimeType: ${best.mimeType}`);
+
+          if (mode !== 'stream') {
+            return new Response(
+              JSON.stringify({
+                status: 'success',
+                downloadUrl: best.url,
+                filename,
+                quality: best.qualityLabel || `${best.height}p`,
+              }),
+              { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            );
+          }
+
+          // Try to proxy stream
+          const fileRes = await fetch(best.url, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              'Referer': 'https://www.youtube.com/',
+              'Origin': 'https://www.youtube.com',
+            },
+          });
+
+          if (fileRes.ok || fileRes.status === 206) {
+            return new Response(fileRes.body, {
+              headers: {
+                ...corsHeaders,
+                'Content-Type': fileRes.headers.get('content-type') || 'application/octet-stream',
+                'Content-Disposition': `attachment; filename="${filename}"`,
+                'Content-Length': fileRes.headers.get('content-length') || '',
+              },
+            });
+          }
+
+          // If stream failed, return URL anyway
+          return new Response(
+            JSON.stringify({
+              status: 'success',
+              downloadUrl: best.url,
+              filename,
+              quality: best.qualityLabel || `${best.height}p`,
+              streamFailed: true,
+            }),
+            { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+        errors.push('ytstream: no suitable format found');
       } else {
         errors.push(`ytstream: HTTP ${res.status}`);
       }
