@@ -132,72 +132,69 @@ serve(async (req) => {
 
       if (res.ok) {
         const data = await res.json();
+        console.log(`ytstream keys: ${JSON.stringify(Object.keys(data))}`);
+        console.log(`ytstream formats count: ${data.formats?.length}, adaptiveFormats count: ${data.adaptiveFormats?.length}`);
+        
         const qualityMap: Record<string, number> = {
           '2160p (4K)': 2160, '1080p (Full HD)': 1080, '720p (HD)': 720,
           '480p': 480, '360p': 360,
         };
-        const targetRes = qualityMap[quality] || 720;
+        const targetRes = qualityMap[quality] || 1080;
 
-        // Use formats (combined streams, more likely to work)
-        const formats = data.formats || [];
-        const candidates = formats
-          .filter((f: any) => f.url && (isAudio ? f.mimeType?.includes('audio') : f.mimeType?.includes('video')))
-          .sort((a: any, b: any) => {
-            const aR = a.height || parseInt(a.qualityLabel) || 0;
-            const bR = b.height || parseInt(b.qualityLabel) || 0;
-            return Math.abs(aR - targetRes) - Math.abs(bR - targetRes);
-          });
+        let best: any = null;
+        let filename = `${(data.title || 'download').replace(/[^\w.\-()（）\s]/g, '_')}.${isAudio ? 'mp3' : 'mp4'}`;
 
-        const best = candidates[0];
-        if (best?.url) {
-          const filename = `${(data.title || 'download').replace(/[^\w.\-()（）\s]/g, '_')}.${isAudio ? 'mp3' : 'mp4'}`;
+        if (isAudio) {
+          // For audio: prefer adaptiveFormats audio with highest bitrate
+          const audioFormats = [
+            ...(data.adaptiveFormats || []),
+            ...(data.formats || []),
+          ].filter((f: any) => f.url && f.mimeType?.includes('audio'));
+          audioFormats.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
+          best = audioFormats[0];
+          console.log(`Audio candidates: ${audioFormats.length}, best bitrate: ${best?.bitrate}`);
+        } else {
+          // For video: try adaptiveFormats first (higher quality), then muxed formats
+          const allFormats = [
+            ...(data.adaptiveFormats || []).map((f: any) => ({ ...f, _source: 'adaptive' })),
+            ...(data.formats || []).map((f: any) => ({ ...f, _source: 'muxed' })),
+          ].filter((f: any) => f.url && f.mimeType?.includes('video'));
 
-          if (mode !== 'stream') {
-            // Return URL for client to handle
-            return new Response(
-              JSON.stringify({
-                status: 'success',
-                downloadUrl: best.url,
-                filename,
-                quality: best.qualityLabel || `${best.height}p`,
-              }),
-              { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-            );
-          }
+          // Log available qualities
+          console.log(`Video candidates: ${allFormats.map((f: any) => `${f.qualityLabel || f.height || '?'}(${f._source})`).join(', ')}`);
 
-          // Try to proxy stream
-          const fileRes = await fetch(best.url, {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-              'Referer': 'https://www.youtube.com/',
-              'Origin': 'https://www.youtube.com',
-            },
-          });
+          // Prefer muxed (has audio) at or above target, then adaptive at target
+          const muxed = allFormats
+            .filter((f: any) => f._source === 'muxed')
+            .sort((a: any, b: any) => (b.height || 0) - (a.height || 0));
 
-          if (fileRes.ok || fileRes.status === 206) {
-            return new Response(fileRes.body, {
-              headers: {
-                ...corsHeaders,
-                'Content-Type': fileRes.headers.get('content-type') || 'application/octet-stream',
-                'Content-Disposition': `attachment; filename="${filename}"`,
-                'Content-Length': fileRes.headers.get('content-length') || '',
-              },
+          const adaptive = allFormats
+            .filter((f: any) => f._source === 'adaptive')
+            .sort((a: any, b: any) => {
+              const aH = a.height || parseInt(a.qualityLabel) || 0;
+              const bH = b.height || parseInt(b.qualityLabel) || 0;
+              return Math.abs(aH - targetRes) - Math.abs(bH - targetRes);
             });
-          }
 
-          // If stream failed, return URL anyway (fallback)
-          return new Response(
-            JSON.stringify({
-              status: 'success',
-              downloadUrl: best.url,
-              filename,
-              quality: best.qualityLabel || `${best.height}p`,
-              streamFailed: true,
-            }),
-            { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-          );
+          // If target is <= 720p, prefer muxed (has audio); otherwise use adaptive (no audio but HD+)
+          const bestMuxed = muxed[0];
+          const bestAdaptive = adaptive[0];
+          const bestMuxedHeight = bestMuxed?.height || parseInt(bestMuxed?.qualityLabel) || 0;
+
+          if (bestMuxedHeight >= targetRes && bestMuxed) {
+            best = bestMuxed;
+            console.log(`Using muxed format: ${best.qualityLabel || best.height}p`);
+          } else if (bestAdaptive) {
+            best = bestAdaptive;
+            console.log(`Using adaptive format: ${best.qualityLabel || best.height}p (video-only, no audio track)`);
+          } else if (bestMuxed) {
+            best = bestMuxed;
+            console.log(`Fallback to muxed: ${best.qualityLabel || best.height}p`);
+          }
         }
-        errors.push('ytstream: no suitable format found');
+
+        if (best?.url) {
+          console.log(`Selected: ${best.qualityLabel || best.height || 'audio'}, bitrate: ${best.bitrate}, mimeType: ${best.mimeType}`);
       } else {
         errors.push(`ytstream: HTTP ${res.status}`);
       }
