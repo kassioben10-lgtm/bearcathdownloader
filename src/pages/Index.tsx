@@ -82,27 +82,34 @@ const Index = () => {
       if (data?.status === "success" && data?.downloadUrl) {
         toast({
           title: "Download pronto!",
-          description: `Iniciando download: ${data.quality}`,
+          description: `Baixando: ${data.quality}`,
         });
 
-        // Fetch as blob to force direct download without navigation
+        // Proxy download through edge function to force attachment
         const filename = data.filename || `download.${format === 'audio' ? 'mp3' : 'mp4'}`;
-        try {
-          const response = await fetch(data.downloadUrl);
-          const blob = await response.blob();
-          const blobUrl = URL.createObjectURL(blob);
-          const link = document.createElement("a");
-          link.href = blobUrl;
-          link.download = filename;
-          link.style.display = "none";
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          URL.revokeObjectURL(blobUrl);
-        } catch {
-          // Fallback: open URL directly
-          window.location.href = data.downloadUrl;
-        }
+        const proxyUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/download-proxy`;
+        
+        const proxyRes = await fetch(proxyUrl, {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          },
+          body: JSON.stringify({ downloadUrl: data.downloadUrl, filename }),
+        });
+
+        if (!proxyRes.ok) throw new Error("Erro ao baixar arquivo");
+
+        const blob = await proxyRes.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = blobUrl;
+        link.download = filename;
+        link.style.display = "none";
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(blobUrl);
       } else {
         throw new Error(data?.error || "Erro desconhecido");
       }
