@@ -92,14 +92,20 @@ const Index = () => {
       const contentType = response.headers.get('content-type') || '';
 
       if (contentType.includes('application/json')) {
-        // Got JSON back — either success with URL or error
         const data = await response.json();
         if (data.status === 'success' && data.downloadUrl) {
-          // Stream failed but got URL — fallback: open directly
-          toast({
-            title: "Download iniciado",
-            description: "Se o vídeo abrir no navegador, clique com botão direito → Salvar como...",
-          });
+          if (data.needsMerge && data.audioUrl) {
+            // Separate video+audio streams - download video (high quality)
+            toast({
+              title: `Download em ${data.quality || 'HD'}`,
+              description: "Baixando vídeo em alta qualidade...",
+            });
+          } else {
+            toast({
+              title: `Download em ${data.quality || 'auto'}`,
+              description: "Se o vídeo abrir no navegador, clique com botão direito → Salvar como...",
+            });
+          }
           const link = document.createElement("a");
           link.href = data.downloadUrl;
           link.download = data.filename || "download";
