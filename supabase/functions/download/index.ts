@@ -80,12 +80,8 @@ async function tryCobalt(fullYtUrl: string, isAudio: boolean, cobaltQuality: str
 
     const filename = `download_${videoId}.${isAudio ? 'mp3' : 'mp4'}`;
 
-    if (mode === 'stream') {
-      const fileRes = await fetchWithUA(downloadUrl);
-      if (fileRes.ok) return makeStreamResponse(fileRes, filename);
-    }
-
-    return makeJsonResponse(downloadUrl, filename, cobaltQuality + 'p');
+    // Always proxy through edge function
+    return await proxyDownload(downloadUrl, filename, cobaltQuality + 'p');
   } catch (e) {
     console.error(`Cobalt error: ${e}`);
     return null;
