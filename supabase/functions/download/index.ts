@@ -21,10 +21,18 @@ function makeStreamResponse(fileRes: Response, filename: string): Response {
   });
 }
 
-function makeJsonResponse(downloadUrl: string, filename: string, quality: string, audioUrl?: string): Response {
+// Always stream through edge function to avoid CORS issues
+async function proxyDownload(url: string, filename: string, quality: string): Promise<Response> {
+  console.log(`Proxying download: ${quality} -> ${url.substring(0, 80)}...`);
+  const fileRes = await fetchWithUA(url);
+  if (fileRes.ok || fileRes.status === 206) {
+    return makeStreamResponse(fileRes, filename);
+  }
+  // If proxy fetch fails, return error (never return raw URL to client)
+  console.error(`Proxy fetch failed: ${fileRes.status}`);
   return new Response(
-    JSON.stringify({ status: 'success', downloadUrl, filename, quality, ...(audioUrl ? { audioUrl } : {}) }),
-    { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    JSON.stringify({ status: 'error', error: `Falha ao baixar o arquivo (HTTP ${fileRes.status})` }),
+    { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
   );
 }
 
