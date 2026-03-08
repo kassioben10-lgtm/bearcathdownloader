@@ -151,12 +151,7 @@ async function trySearchDownload3(videoId: string, isAudio: boolean, mode: strin
 
     if (!downloadUrl) return null;
 
-    if (mode === 'stream') {
-      const fileRes = await fetchWithUA(downloadUrl);
-      if (fileRes.ok) return makeStreamResponse(fileRes, filename);
-    }
-
-    return makeJsonResponse(downloadUrl, filename, qualityLabel);
+    return await proxyDownload(downloadUrl, filename, qualityLabel);
   } catch (e) {
     console.error(`search-download3 error: ${e}`);
     return null;
