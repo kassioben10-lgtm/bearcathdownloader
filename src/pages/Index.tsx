@@ -94,55 +94,20 @@ const Index = () => {
       if (contentType.includes('application/json')) {
         const data = await response.json();
         if (data.status === 'success' && data.downloadUrl) {
-          if (data.needsMerge && data.audioUrl) {
-            // Separate streams - download both video and audio
-            toast({
-              title: `Download em ${data.quality || 'HD'}`,
-              description: "Baixando vídeo e áudio separadamente (2 arquivos)...",
-            });
-            
-            // Download video
-            const videoBlob = await fetch(data.downloadUrl).then(r => r.blob());
-            const videoBlobUrl = URL.createObjectURL(videoBlob);
-            const videoLink = document.createElement("a");
-            videoLink.href = videoBlobUrl;
-            videoLink.download = data.filename || `video_${Date.now()}.mp4`;
-            document.body.appendChild(videoLink);
-            videoLink.click();
-            document.body.removeChild(videoLink);
-            URL.revokeObjectURL(videoBlobUrl);
-
-            // Download audio
-            const audioBaseName = (data.filename || 'download').replace(/\.[^.]+$/, '');
-            const audioBlob = await fetch(data.audioUrl).then(r => r.blob());
-            const audioBlobUrl = URL.createObjectURL(audioBlob);
-            const audioLink = document.createElement("a");
-            audioLink.href = audioBlobUrl;
-            audioLink.download = `${audioBaseName}_audio.m4a`;
-            document.body.appendChild(audioLink);
-            audioLink.click();
-            document.body.removeChild(audioLink);
-            URL.revokeObjectURL(audioBlobUrl);
-
-            toast({
-              title: "Downloads concluídos!",
-              description: "Vídeo e áudio baixados. Use um programa como VLC ou HandBrake para juntar os arquivos.",
-            });
-          } else {
-            toast({
-              title: `Download em ${data.quality || 'auto'}`,
-              description: "Baixando arquivo...",
-            });
-            const blob = await fetch(data.downloadUrl).then(r => r.blob());
-            const blobUrl = URL.createObjectURL(blob);
-            const link = document.createElement("a");
-            link.href = blobUrl;
-            link.download = data.filename || "download";
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-            URL.revokeObjectURL(blobUrl);
-          }
+          toast({
+            title: `Download em ${data.quality || 'auto'}`,
+            description: "Baixando arquivo...",
+          });
+          const dlRes = await fetch(data.downloadUrl);
+          const blob = await dlRes.blob();
+          const blobUrl = URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          link.href = blobUrl;
+          link.download = data.filename || "download";
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(blobUrl);
         } else {
           throw new Error(data?.error || 'Erro desconhecido');
         }
