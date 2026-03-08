@@ -73,9 +73,9 @@ const Index = () => {
     });
 
     try {
-      // Single call with mode=stream — downloads and streams in one request
-      const downloadUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/download`;
-      const response = await fetch(downloadUrl, {
+      // Try streaming mode first (direct download)
+      const edgeUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/download`;
+      const response = await fetch(edgeUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -89,30 +89,46 @@ const Index = () => {
         throw new Error(errData?.error || `Erro ${response.status}`);
       }
 
-      // Check if response is a file stream (not JSON error)
       const contentType = response.headers.get('content-type') || '';
+
       if (contentType.includes('application/json')) {
-        const errData = await response.json();
-        throw new Error(errData?.error || 'Erro desconhecido');
+        // Got JSON back — either success with URL or error
+        const data = await response.json();
+        if (data.status === 'success' && data.downloadUrl) {
+          // Stream failed but got URL — fallback: open directly
+          toast({
+            title: "Download iniciado",
+            description: "Se o vídeo abrir no navegador, clique com botão direito → Salvar como...",
+          });
+          const link = document.createElement("a");
+          link.href = data.downloadUrl;
+          link.download = data.filename || "download";
+          link.style.display = "none";
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+        } else {
+          throw new Error(data?.error || 'Erro desconhecido');
+        }
+      } else {
+        // Got file stream — direct download!
+        toast({
+          title: "Download pronto!",
+          description: "Arquivo sendo baixado...",
+        });
+        const blob = await response.blob();
+        const filename = response.headers.get('content-disposition')?.match(/filename="(.+)"/)?.[1]
+          || `download.${format === 'audio' ? 'mp3' : 'mp4'}`;
+        const blobUrl = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = blobUrl;
+        link.download = filename;
+        link.style.display = "none";
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(blobUrl);
       }
-
-      toast({
-        title: "Download pronto!",
-        description: "Arquivo sendo baixado...",
-      });
-
-      const blob = await response.blob();
-      const filename = response.headers.get('content-disposition')?.match(/filename="(.+)"/)?.[1] 
-        || `download.${format === 'audio' ? 'mp3' : 'mp4'}`;
-      const blobUrl = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = blobUrl;
-      link.download = filename;
-      link.style.display = "none";
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(blobUrl);
     } catch (err: any) {
       console.error("Download error:", err);
       toast({
