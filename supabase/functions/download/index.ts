@@ -28,6 +28,7 @@ serve(async (req) => {
       );
     }
     const videoId = videoIdMatch[1];
+    const fullYtUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
     const rapidApiKey = Deno.env.get('RAPIDAPI_KEY');
     if (!rapidApiKey) {
@@ -40,48 +41,67 @@ serve(async (req) => {
     const isAudio = format === 'audio';
     const errors: string[] = [];
 
-    // Strategy 1: youtube-search-download3 (CDN-proxied links)
+    // Strategy 1: YouTube Video Downloader 4K/8K (returns merged video+audio)
     try {
-      console.log('Trying youtube-search-download3...');
-      const dlRes = await fetch(
-        `https://youtube-search-download3.p.rapidapi.com/download?video=${videoId}`,
-        {
-          headers: {
-            'x-rapidapi-key': rapidApiKey,
-            'x-rapidapi-host': 'youtube-search-download3.p.rapidapi.com',
-          },
-        }
-      );
+      console.log('Trying youtube-video-downloader-4k...');
+      const dlFormat = isAudio ? 'mp3' : 'mp4';
+      const apiUrl = `https://youtube-video-downloader-4k-and-8k-mp3.p.rapidapi.com/download.php?url=${encodeURIComponent(fullYtUrl)}&format=${dlFormat}&button=1`;
+
+      const dlRes = await fetch(apiUrl, {
+        headers: {
+          'x-rapidapi-key': rapidApiKey,
+          'x-rapidapi-host': 'youtube-video-downloader-4k-and-8k-mp3.p.rapidapi.com',
+        },
+      });
 
       if (dlRes.ok) {
         const data = await dlRes.json();
-        console.log(`download3 keys: ${JSON.stringify(Object.keys(data))}`);
-        console.log(`download3 data: ${JSON.stringify(data).substring(0, 500)}`);
+        console.log(`4k-downloader keys: ${JSON.stringify(Object.keys(data))}`);
+        console.log(`4k-downloader data preview: ${JSON.stringify(data).substring(0, 800)}`);
 
+        // Find best download link with quality matching
         let downloadUrl: string | null = null;
-        let filename = `${data.title || 'download'}.${isAudio ? 'mp3' : 'mp4'}`;
+        let filename = `download.${isAudio ? 'mp3' : 'mp4'}`;
+        let selectedQuality = 'auto';
 
-        if (isAudio && data.mp3) {
-          downloadUrl = typeof data.mp3 === 'string' ? data.mp3 : data.mp3?.url || data.mp3?.link;
+        // Try to extract title
+        if (data.title) {
+          filename = `${data.title.replace(/[^\w.\-()（）\s]/g, '_')}.${isAudio ? 'mp3' : 'mp4'}`;
         }
-        if (!isAudio && data.mp4) {
-          downloadUrl = typeof data.mp4 === 'string' ? data.mp4 : data.mp4?.url || data.mp4?.link;
+
+        // Check for links/formats array
+        const links = data.links || data.formats || data.urls || [];
+        if (Array.isArray(links) && links.length > 0) {
+          const qualityMap: Record<string, number> = {
+            '2160p (4K)': 2160, '1080p (Full HD)': 1080, '720p (HD)': 720,
+            '480p': 480, '360p': 360,
+          };
+          const targetRes = qualityMap[quality] || 1080;
+
+          // Sort by closest to target quality
+          const sorted = links
+            .filter((l: any) => l.url || l.link || l.downloadUrl)
+            .sort((a: any, b: any) => {
+              const aH = a.height || parseInt(a.quality) || parseInt(a.qualityLabel) || 0;
+              const bH = b.height || parseInt(b.quality) || parseInt(b.qualityLabel) || 0;
+              return Math.abs(aH - targetRes) - Math.abs(bH - targetRes);
+            });
+
+          if (sorted.length > 0) {
+            const best = sorted[0];
+            downloadUrl = best.url || best.link || best.downloadUrl;
+            selectedQuality = best.quality || best.qualityLabel || 'auto';
+          }
         }
-        // Try other fields
-        if (!downloadUrl && data.url) downloadUrl = data.url;
-        if (!downloadUrl && data.link) downloadUrl = data.link;
-        if (!downloadUrl && data.downloadUrl) downloadUrl = data.downloadUrl;
-        // Try formats array
-        if (!downloadUrl && data.formats) {
-          const target = isAudio
-            ? data.formats.find((f: any) => f.mimeType?.includes('audio'))
-            : data.formats.find((f: any) => f.mimeType?.includes('video'));
-          if (target?.url) downloadUrl = target.url;
+
+        // Try direct URL fields
+        if (!downloadUrl) {
+          downloadUrl = data.url || data.link || data.downloadUrl || data.download_url;
         }
 
         if (downloadUrl) {
           if (mode === 'stream') {
-            console.log(`Streaming from download3: ${downloadUrl.substring(0, 100)}`);
+            console.log(`Streaming from 4k-downloader: ${downloadUrl.substring(0, 100)}`);
             const fileRes = await fetch(downloadUrl, {
               headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -93,31 +113,31 @@ serve(async (req) => {
                 headers: {
                   ...corsHeaders,
                   'Content-Type': fileRes.headers.get('content-type') || 'application/octet-stream',
-                  'Content-Disposition': `attachment; filename="${filename.replace(/[^\w.\-()（）\s]/g, '_')}"`,
+                  'Content-Disposition': `attachment; filename="${filename}"`,
                   'Content-Length': fileRes.headers.get('content-length') || '',
                 },
               });
             }
-            errors.push(`download3: stream failed ${fileRes.status}`);
+            errors.push(`4k-downloader: stream failed ${fileRes.status}`);
           } else {
             return new Response(
-              JSON.stringify({ status: 'success', downloadUrl, filename, quality: 'auto' }),
+              JSON.stringify({ status: 'success', downloadUrl, filename, quality: selectedQuality }),
               { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
             );
           }
         } else {
-          errors.push(`download3: no URL in response`);
+          errors.push(`4k-downloader: no URL in response`);
         }
       } else {
         const text = await dlRes.text();
-        console.error(`download3 error ${dlRes.status}: ${text.substring(0, 200)}`);
-        errors.push(`download3: HTTP ${dlRes.status}`);
+        console.error(`4k-downloader error ${dlRes.status}: ${text.substring(0, 200)}`);
+        errors.push(`4k-downloader: HTTP ${dlRes.status}`);
       }
     } catch (e) {
-      errors.push(`download3: ${e instanceof Error ? e.message : String(e)}`);
+      errors.push(`4k-downloader: ${e instanceof Error ? e.message : String(e)}`);
     }
 
-    // Strategy 2: ytstream (returns URLs, try streaming from edge function)
+    // Strategy 2: ytstream fallback (muxed formats with audio, max ~720p)
     try {
       console.log('Trying ytstream...');
       const res = await fetch(
@@ -133,62 +153,27 @@ serve(async (req) => {
       if (res.ok) {
         const data = await res.json();
         console.log(`ytstream keys: ${JSON.stringify(Object.keys(data))}`);
-        console.log(`ytstream formats count: ${data.formats?.length}, adaptiveFormats count: ${data.adaptiveFormats?.length}`);
-        
-        const qualityMap: Record<string, number> = {
-          '2160p (4K)': 2160, '1080p (Full HD)': 1080, '720p (HD)': 720,
-          '480p': 480, '360p': 360,
-        };
-        const targetRes = qualityMap[quality] || 1080;
 
         let best: any = null;
-        let filename = `${(data.title || 'download').replace(/[^\w.\-()（）\s]/g, '_')}.${isAudio ? 'mp3' : 'mp4'}`;
+        const filename = `${(data.title || 'download').replace(/[^\w.\-()（）\s]/g, '_')}.${isAudio ? 'mp3' : 'mp4'}`;
 
         if (isAudio) {
-          // For audio: prefer adaptiveFormats audio with highest bitrate
           const audioFormats = [
             ...(data.adaptiveFormats || []),
             ...(data.formats || []),
           ].filter((f: any) => f.url && f.mimeType?.includes('audio'));
           audioFormats.sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0));
           best = audioFormats[0];
-          console.log(`Audio candidates: ${audioFormats.length}, best bitrate: ${best?.bitrate}`);
         } else {
-          // For video: always prefer muxed formats (video+audio combined)
-          // Adaptive formats are video-only (no audio) so only use as absolute last resort
-          const allFormats = [
-            ...(data.adaptiveFormats || []).map((f: any) => ({ ...f, _source: 'adaptive' })),
-            ...(data.formats || []).map((f: any) => ({ ...f, _source: 'muxed' })),
-          ].filter((f: any) => f.url && f.mimeType?.includes('video'));
-
-          console.log(`Video candidates: ${allFormats.map((f: any) => `${f.qualityLabel || f.height || '?'}(${f._source})`).join(', ')}`);
-
-          // Muxed formats sorted by resolution (highest first)
-          const muxed = allFormats
-            .filter((f: any) => f._source === 'muxed')
+          // Only use muxed formats (video+audio combined)
+          const muxed = (data.formats || [])
+            .filter((f: any) => f.url && f.mimeType?.includes('video'))
             .sort((a: any, b: any) => (b.height || 0) - (a.height || 0));
-
-          // Always use the highest quality muxed format (includes audio)
-          const bestMuxed = muxed[0];
-
-          if (bestMuxed) {
-            best = bestMuxed;
-            console.log(`Using muxed format (video+audio): ${best.qualityLabel || best.height}p`);
-          } else {
-            // No muxed available — warn but use adaptive as fallback
-            const adaptive = allFormats
-              .filter((f: any) => f._source === 'adaptive')
-              .sort((a: any, b: any) => (b.height || 0) - (a.height || 0));
-            best = adaptive[0];
-            if (best) {
-              console.log(`WARNING: Using adaptive (no audio): ${best.qualityLabel || best.height}p`);
-            }
-          }
+          best = muxed[0];
+          console.log(`ytstream muxed: ${muxed.map((f: any) => `${f.qualityLabel || f.height}p`).join(', ')}`);
         }
 
         if (best?.url) {
-          console.log(`Selected: ${best.qualityLabel || best.height || 'audio'}, bitrate: ${best.bitrate}, mimeType: ${best.mimeType}`);
-
           if (mode !== 'stream') {
             return new Response(
               JSON.stringify({
@@ -201,7 +186,6 @@ serve(async (req) => {
             );
           }
 
-          // Try to proxy stream
           const fileRes = await fetch(best.url, {
             headers: {
               'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -221,7 +205,6 @@ serve(async (req) => {
             });
           }
 
-          // If stream failed, return URL anyway
           return new Response(
             JSON.stringify({
               status: 'success',
