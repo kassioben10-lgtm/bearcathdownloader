@@ -1,176 +1,289 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Download, Zap, Shield, Globe } from "lucide-react";
+import { Download, Zap, Shield, Globe, Sparkles } from "lucide-react";
 import UrlInput from "@/components/UrlInput";
 import VideoPreview, { type VideoInfo } from "@/components/VideoPreview";
 import FormatSelector from "@/components/FormatSelector";
 import { useToast } from "@/hooks/use-toast";
-import { supabase } from "@/integrations/supabase/client";
+import { extractVideoId, isValidYouTubeUrl } from "@/lib/youtube";
 import bearLogo from "@/assets/bear-logo.png";
 
 const features = [
-  { icon: Zap, title: "Rápido", desc: "Downloads em alta velocidade" },
-  { icon: Shield, title: "Seguro", desc: "Sem vírus ou malware" },
-  { icon: Globe, title: "Sem limites", desc: "Baixe quantos quiser" },
+  { icon: Zap, title: "Super Rápido", desc: "Download em velocidade máxima diretamente no seu dispositivo" },
+  { icon: Shield, title: "100% Seguro", desc: "Sem anúncios invasivos, sem rastreadores ou malware" },
+  { icon: Globe, title: "Sem Limites", desc: "Baixe vídeos em até 4K ou áudios MP3 em 320kbps ilimitados" },
 ];
 
 const Index = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [downloadSpeed, setDownloadSpeed] = useState("");
+  const [downloadEta, setDownloadEta] = useState("");
+  const [downloadMessage, setDownloadMessage] = useState("");
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [downloadReadyFile, setDownloadReadyFile] = useState<{ jobId: string; filename: string } | null>(null);
+
   const [video, setVideo] = useState<VideoInfo | null>(null);
   const [currentUrl, setCurrentUrl] = useState("");
   const { toast } = useToast();
 
-  const handleSearch = async (url: string) => {
-    const ytRegex = /^(https?:\/\/)?(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)[\w-]+/;
-    if (!ytRegex.test(url)) {
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Clear polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    };
+  }, []);
+
+  const handleSearch = async (url: string, autoDownload: boolean = false) => {
+    const videoId = extractVideoId(url);
+    if (!videoId) {
       toast({
         title: "URL inválida",
-        description: "Por favor, insira um link válido do YouTube.",
+        description: "Por favor, insira um link válido do YouTube (vídeo, shorts ou lives).",
         variant: "destructive",
       });
       return;
     }
 
     setIsLoading(true);
+    setDownloadError(null);
+    setDownloadReadyFile(null);
     setCurrentUrl(url);
-
-    const videoIdMatch = url.match(/(?:v=|youtu\.be\/|shorts\/)([\w-]+)/);
-    const videoId = videoIdMatch?.[1] || "dQw4w9WgXcQ";
 
     let title = "Vídeo do YouTube";
     let channel = "YouTube";
+    let duration = "";
+    let views = "";
+    let thumbnail = `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
+
+    // 1. Try local backend /api/info
     try {
-      const oembedRes = await fetch(
-        `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`
-      );
-      if (oembedRes.ok) {
-        const data = await oembedRes.json();
-        title = data.title || title;
-        channel = data.author_name || channel;
+      const res = await fetch(`/api/info?url=${encodeURIComponent(url)}`);
+      if (res.ok) {
+        const result = await res.json();
+        if (result.success && result.data) {
+          title = result.data.title || title;
+          channel = result.data.channel || channel;
+          duration = result.data.duration || "";
+          views = result.data.views || "";
+          thumbnail = result.data.thumbnail || thumbnail;
+        }
+      } else {
+        throw new Error("Local API fallback");
       }
     } catch {
-      // fallback
+      // Fallback to oembed
+      try {
+        const oembedRes = await fetch(
+          `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`
+        );
+        if (oembedRes.ok) {
+          const data = await oembedRes.json();
+          title = data.title || title;
+          channel = data.author_name || channel;
+        }
+      } catch {}
     }
 
-    setVideo({
+    const videoData: VideoInfo = {
       title,
-      thumbnail: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
-      duration: "",
-      views: "",
+      thumbnail,
+      duration,
+      views,
       channel,
-    });
+    };
+
+    setVideo(videoData);
     setIsLoading(false);
+
+    // If auto-download was requested upon pasting, start right away!
+    if (autoDownload) {
+      setTimeout(() => {
+        handleDownload("video", "1080p (Full HD)");
+      }, 100);
+    }
   };
 
-  const handleDownload = async (format: string, quality: string) => {
+  const handleDownload = async (format: "video" | "audio", quality: string) => {
     if (!currentUrl) return;
 
+    if (isDownloading) return;
+
     setIsDownloading(true);
+    setDownloadProgress(0);
+    setDownloadSpeed("");
+    setDownloadEta("");
+    setDownloadMessage("Conectando ao YouTube...");
+    setDownloadError(null);
+    setDownloadReadyFile(null);
+
     toast({
-      title: "Processando download...",
-      description: "Extraindo link direto do YouTube. Aguarde...",
+      title: "Iniciando download...",
+      description: `Processando vídeo em ${format === "audio" ? "MP3" : quality}. Aguarde...`,
     });
 
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+    }
+
     try {
-      // Try streaming mode first (direct download)
-      const edgeUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/download`;
-      const response = await fetch(edgeUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-        },
-        body: JSON.stringify({ url: currentUrl, format, quality, mode: 'stream' }),
+      // Start download job via local API
+      const startRes = await fetch("/api/start-download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: currentUrl, format, quality }),
       });
 
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData?.error || `Erro ${response.status}`);
+      if (!startRes.ok) {
+        const err = await startRes.json().catch(() => ({}));
+        throw new Error(err.error || `Erro ${startRes.status} ao iniciar download.`);
       }
 
-      const contentType = response.headers.get('content-type') || '';
+      const startData = await startRes.json();
+      const jobId = startData.jobId;
 
-      if (contentType.includes('application/json')) {
-        // JSON means an error occurred
-        const data = await response.json();
-        throw new Error(data?.error || 'Erro desconhecido');
-      } else {
-        // Got file stream — direct download!
-        toast({
-          title: "Download pronto!",
-          description: "Arquivo sendo baixado...",
-        });
-        const blob = await response.blob();
-        const filename = response.headers.get('content-disposition')?.match(/filename="(.+)"/)?.[1]
-          || `download.${format === 'audio' ? 'mp3' : 'mp4'}`;
-        const blobUrl = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.href = blobUrl;
-        link.download = filename;
-        link.style.display = "none";
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(blobUrl);
-      }
+      // Poll progress every 500ms
+      pollIntervalRef.current = setInterval(async () => {
+        try {
+          const progRes = await fetch(`/api/progress?jobId=${jobId}`);
+          if (!progRes.ok) return;
+
+          const progData = await progRes.json();
+
+          if (progData.progress !== undefined) {
+            setDownloadProgress(progData.progress);
+          }
+          if (progData.speed) setDownloadSpeed(progData.speed);
+          if (progData.eta) setDownloadEta(progData.eta);
+          if (progData.message) setDownloadMessage(progData.message);
+
+          if (progData.status === "ready") {
+            if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+            setDownloadProgress(100);
+            setDownloadMessage("Download finalizado! Salvando no computador...");
+            setIsDownloading(false);
+
+            const filename = progData.filename || (format === "audio" ? "audio.mp3" : "video.mp4");
+            setDownloadReadyFile({ jobId, filename });
+
+            // Trigger browser direct file save
+            const fileUrl = `/api/file?jobId=${jobId}`;
+            const link = document.createElement("a");
+            link.href = fileUrl;
+            link.download = filename;
+            link.style.display = "none";
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+
+            toast({
+              title: "Download concluído!",
+              description: `O arquivo ${filename} foi baixado com sucesso.`,
+            });
+          } else if (progData.status === "error") {
+            if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+            setIsDownloading(false);
+            setDownloadError(progData.error || "Falha no download");
+            toast({
+              title: "Erro no download",
+              description: progData.error || "Não foi possível baixar o vídeo.",
+              variant: "destructive",
+            });
+          }
+        } catch (pollErr) {
+          console.error("Poll error:", pollErr);
+        }
+      }, 500);
     } catch (err: any) {
       console.error("Download error:", err);
+      setIsDownloading(false);
+      setDownloadError(err.message || "Erro de conexão com o servidor local.");
       toast({
-        title: "Erro no download",
-        description: err.message || "Não foi possível processar. Tente novamente.",
+        title: "Erro ao processar",
+        description: err.message || "Verifique se o servidor local está em execução.",
         variant: "destructive",
       });
-    } finally {
-      setIsDownloading(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-background relative overflow-hidden">
+    <div className="min-h-screen bg-background relative overflow-hidden flex flex-col justify-between">
       <div className="absolute inset-0 gradient-hero pointer-events-none" />
 
-      <div className="relative z-10">
+      <div className="relative z-10 flex-1">
         <header className="flex items-center justify-center pt-6 pb-2">
-          <div className="flex items-center gap-2 text-muted-foreground text-sm">
+          <div className="flex items-center gap-2.5 px-4 py-1.5 rounded-full bg-card/60 border border-border/60 backdrop-blur-md shadow-sm">
             <img src={bearLogo} alt="Bear Catch" className="h-5 w-auto" />
-            <span className="font-medium">Bear Catch Downloader</span>
+            <span className="font-semibold text-foreground text-sm tracking-tight">
+              Bear Catch Downloader
+            </span>
+            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-primary/10 text-primary border border-primary/20">
+              v2.0 Turbo
+            </span>
           </div>
         </header>
 
-        <main className="container max-w-4xl mx-auto px-4 pt-12 pb-20 space-y-10">
+        <main className="container max-w-4xl mx-auto px-4 pt-10 pb-16 space-y-8">
           <motion.div
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.6 }}
             className="text-center space-y-4"
           >
-            <div className="flex items-center justify-center gap-3 mb-6">
-              <img src={bearLogo} alt="Bear Catch Logo" className="h-16 w-auto" />
+            <div className="flex items-center justify-center gap-3 mb-4">
+              <div className="relative group">
+                <div className="absolute -inset-2 bg-primary/30 rounded-full blur-xl group-hover:bg-primary/50 transition-all duration-500" />
+                <img
+                  src={bearLogo}
+                  alt="Bear Catch Logo"
+                  className="relative h-20 w-auto drop-shadow-md hover:scale-105 transition-transform duration-300"
+                />
+              </div>
             </div>
-            <h1 className="text-4xl md:text-5xl lg:text-6xl font-display font-bold text-foreground tracking-tight">
-              <span className="text-gradient">Bear Catch</span>{" "}
-              Downloader
+
+            <h1 className="text-4xl md:text-5xl lg:text-6xl font-display font-extrabold text-foreground tracking-tight">
+              <span className="text-gradient">Bear Catch</span> Downloader
             </h1>
-            <p className="text-muted-foreground text-lg max-w-md mx-auto">
-              Cole o link, escolha o formato e baixe. Simples assim.
+            <p className="text-muted-foreground text-base md:text-lg max-w-lg mx-auto">
+              Baixe vídeos e músicas do YouTube em alta velocidade e qualidade máxima. Cole o link e o download começará imediatamente!
             </p>
           </motion.div>
 
-          <UrlInput onSubmit={handleSearch} isLoading={isLoading} />
+          <UrlInput
+            onSubmit={handleSearch}
+            isLoading={isLoading}
+            isDownloading={isDownloading}
+          />
 
           {video && (
-            <div className="space-y-6">
+            <motion.div
+              initial={{ opacity: 0, y: 15 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.4 }}
+              className="space-y-6"
+            >
               <VideoPreview video={video} />
-              <FormatSelector onDownload={handleDownload} isDownloading={isDownloading} />
-            </div>
+              <FormatSelector
+                onDownload={handleDownload}
+                isDownloading={isDownloading}
+                downloadProgress={downloadProgress}
+                downloadSpeed={downloadSpeed}
+                downloadEta={downloadEta}
+                downloadMessage={downloadMessage}
+                downloadError={downloadError}
+                downloadReadyFile={downloadReadyFile}
+              />
+            </motion.div>
           )}
 
           {!video && (
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              transition={{ delay: 0.5, duration: 0.5 }}
+              transition={{ delay: 0.4, duration: 0.5 }}
               className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-8"
             >
               {features.map((f, i) => (
@@ -178,24 +291,28 @@ const Index = () => {
                   key={f.title}
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.6 + i * 0.1, duration: 0.4 }}
-                  className="flex flex-col items-center text-center p-6 bg-card/50 border border-border/50 rounded-xl"
+                  transition={{ delay: 0.5 + i * 0.1, duration: 0.4 }}
+                  className="flex flex-col items-center text-center p-6 bg-card/60 backdrop-blur-md border border-border/60 rounded-2xl hover:border-primary/40 transition-colors shadow-sm"
                 >
-                  <div className="p-2.5 bg-primary/10 rounded-xl mb-3">
-                    <f.icon className="h-5 w-5 text-primary" />
+                  <div className="p-3 bg-primary/10 border border-primary/20 rounded-xl mb-3 text-primary">
+                    <f.icon className="h-6 w-6" />
                   </div>
-                  <h3 className="font-display font-semibold text-foreground mb-1">{f.title}</h3>
-                  <p className="text-sm text-muted-foreground">{f.desc}</p>
+                  <h3 className="font-display font-semibold text-foreground text-base mb-1">
+                    {f.title}
+                  </h3>
+                  <p className="text-xs md:text-sm text-muted-foreground leading-relaxed">
+                    {f.desc}
+                  </p>
                 </motion.div>
               ))}
             </motion.div>
           )}
         </main>
-
-        <footer className="text-center py-8 text-muted-foreground text-sm border-t border-border/50">
-          <p>Bear Catch Downloader. Respeite os direitos autorais.</p>
-        </footer>
       </div>
+
+      <footer className="text-center py-6 text-muted-foreground text-xs border-t border-border/40 relative z-10 bg-card/20">
+        <p>Bear Catch Downloader. Desenvolvido para uso pessoal e legal. Respeite os direitos autorais dos criadores.</p>
+      </footer>
     </div>
   );
 };
