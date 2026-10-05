@@ -57,15 +57,45 @@ export function createApiMiddleware() {
           bodyText += chunk.toString();
         });
 
-        req.on("end", () => {
+        req.on("end", async () => {
           try {
             const body = bodyText ? JSON.parse(bodyText) : {};
-            const { url, format, quality } = body;
+            const { url, format, quality, title, artist, album, year, thumbnail } = body;
             if (!url) {
               return sendJson(400, { error: "URL é obrigatória." });
             }
 
-            const jobId = startDownloadJob({ url, format, quality });
+            let finalTitle = title;
+            let finalArtist = artist;
+            let finalAlbum = album;
+            let finalYear = year;
+            let finalThumbnail = thumbnail;
+
+            // If title or artist missing, fetch info quickly
+            if (!finalTitle || !finalArtist) {
+              try {
+                const info = await getVideoInfo(url);
+                if (info) {
+                  finalTitle = finalTitle || info.title;
+                  finalArtist = finalArtist || info.artist;
+                  finalAlbum = finalAlbum || info.album;
+                  finalYear = finalYear || info.year;
+                  finalThumbnail = finalThumbnail || info.thumbnail;
+                }
+              } catch {}
+            }
+
+            const jobId = startDownloadJob({
+              url,
+              format,
+              quality,
+              customTitle: finalTitle,
+              customArtist: finalArtist,
+              customAlbum: finalAlbum,
+              customYear: finalYear,
+              thumbnailUrl: finalThumbnail,
+            });
+
             return sendJson(200, { success: true, jobId });
           } catch (err) {
             return sendJson(500, { error: err.message || "Erro ao iniciar download." });
@@ -112,6 +142,7 @@ export function createApiMiddleware() {
 
         const stat = fs.statSync(job.filePath);
         const filename = job.filename || (job.format === "mp3" ? "audio.mp3" : "video.mp4");
+        const asciiFilename = filename.replace(/[^\x20-\x7E]/g, "_").replace(/"/g, "");
         const encodedFilename = encodeURIComponent(filename);
 
         res.statusCode = 200;
@@ -121,7 +152,7 @@ export function createApiMiddleware() {
         );
         res.setHeader(
           "Content-Disposition",
-          `attachment; filename="${encodedFilename}"; filename*=UTF-8''${encodedFilename}`
+          `attachment; filename="${asciiFilename}"; filename*=UTF-8''${encodedFilename}`
         );
         res.setHeader("Content-Length", stat.size);
 

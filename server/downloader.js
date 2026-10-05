@@ -31,10 +31,197 @@ export function extractVideoId(url) {
 }
 
 export function sanitizeFilename(filename) {
+  if (!filename) return "audio";
   return filename
     .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")
     .replace(/\s+/g, " ")
+    .replace(/^\.+|\.+$/g, "")
     .trim();
+}
+
+/**
+ * Smart parser to clean video title, separate artist and track,
+ * and strip unwanted tags like (Official Video), (Clipe Oficial), [4K], etc.
+ */
+export function parseMusicMetadata(rawTitle = "", rawChannel = "", ytData = {}) {
+  let artist = (ytData.artist || "").trim();
+  let title = (ytData.track || "").trim();
+  let album = (ytData.album || "").trim();
+  let year = ytData.release_year
+    ? String(ytData.release_year)
+    : ytData.upload_date
+    ? String(ytData.upload_date).slice(0, 4)
+    : "";
+
+  let cleanCh = (rawChannel || "")
+    .replace(/\s*-\s*Topic$/i, "")
+    .replace(/VEVO$/i, "")
+    .replace(/\s*Official(?:\s*(?:Music|Artist|Channel))?$/i, "")
+    .replace(/\s*Oficial$/i, "")
+    .trim();
+
+  // Junk patterns to strip from song title
+  const junkPatterns = [
+    /\s*[\(\[\{]?(?:official\s*(?:music\s*)?video|video\s*oficial|vídeo\s*oficial|clipe\s*oficial|clip\s*oficial|clipe|clip\s*officiel|official\s*audio|áudio\s*oficial|audio\s*oficial|official\s*lyric\s*video|lyric\s*video|letra|lyrics|visualizer|clip)[\)\]\}]?/gi,
+    /\s*[\(\[\{]?(?:4k(?:\s*upgrade)?|1080p|hd|hq|hq audio|remastered|remasterizado|audio)[\)\]\}]?/gi,
+    /\s*\|\s*$/g,
+    /^\s*\|\s*/g,
+  ];
+
+  let cleaned = (rawTitle || "").trim();
+  for (const pat of junkPatterns) {
+    cleaned = cleaned.replace(pat, " ");
+  }
+  cleaned = cleaned.replace(/\s+/g, " ").trim();
+
+  // If yt-dlp already provided explicit track and artist
+  if (artist && title) {
+    return {
+      artist,
+      title,
+      album: album || title || "Single",
+      year: year || String(new Date().getFullYear()),
+      filename: `${artist} - ${title}.mp3`,
+    };
+  }
+
+  // Detect separators: ' - ', ' – ', ' — ', ' : ', ' | '
+  const sepMatch = cleaned.match(/^(.*?)\s*(?:[-–—:|])\s*(.*)$/);
+  if (sepMatch) {
+    let part1 = sepMatch[1].trim();
+    let part2 = sepMatch[2].trim();
+
+    const p1Lower = part1.toLowerCase();
+    const p2Lower = part2.toLowerCase();
+    const chLower = cleanCh.toLowerCase();
+
+    // If part2 looks like channel/artist (e.g. "Song Name - Artist")
+    if (chLower && (p2Lower === chLower || p2Lower.includes(chLower))) {
+      artist = part2;
+      title = part1;
+    } else {
+      artist = part1;
+      title = part2;
+    }
+  } else {
+    artist = cleanCh || "YouTube";
+    title = cleaned || rawTitle || "Música";
+  }
+
+  // Remove trailing or leading dashes or colons
+  title = title.replace(/^[\s\-–—:]+|[\s\-–—:]+$/g, "").trim();
+  artist = artist.replace(/^[\s\-–—:]+|[\s\-–—:]+$/g, "").trim();
+
+  if (!title) title = rawTitle || "Música";
+  if (!artist) artist = cleanCh || "Desconhecido";
+
+  const filename =
+    artist && artist !== "Desconhecido" && !title.toLowerCase().startsWith(artist.toLowerCase())
+      ? `${artist} - ${title}.mp3`
+      : `${title}.mp3`;
+
+  return {
+    artist,
+    title,
+    album: album || (artist ? `${artist} - Single` : "Single"),
+    year: year || String(new Date().getFullYear()),
+    filename,
+  };
+}
+
+/**
+ * Ensures ID3v2.3 tags (Title, Artist, Album, Year) and front cover art
+ * are properly written and embedded into the MP3 using ffmpeg.
+ */
+export async function ensureMp3TagsAndCover(mp3Path, { title, artist, album, year, thumbnailUrl }) {
+  if (!fs.existsSync(mp3Path)) return false;
+  const tmpDir = path.dirname(mp3Path);
+  const tempOutput = path.join(tmpDir, `tagged_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.mp3`);
+
+  // Check if mp3 already has a video/image stream (attached pic / album art)
+  let hasCover = false;
+  try {
+    const probe = spawn("ffprobe", [
+      "-v", "error",
+      "-select_streams", "v",
+      "-show_entries", "stream=codec_name",
+      "-of", "default=noprint_wrappers=1:nokey=1",
+      mp3Path,
+    ]);
+    let probeOut = "";
+    probe.stdout.on("data", (d) => {
+      probeOut += d.toString();
+    });
+    await new Promise((res) => {
+      probe.on("close", res);
+      probe.on("error", res);
+    });
+    hasCover = probeOut.trim().length > 0;
+  } catch {}
+
+  let tempThumbPath = null;
+  if (!hasCover && thumbnailUrl) {
+    try {
+      const res = await fetch(thumbnailUrl);
+      if (res.ok) {
+        const buffer = Buffer.from(await res.arrayBuffer());
+        tempThumbPath = path.join(tmpDir, `thumb_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.jpg`);
+        fs.writeFileSync(tempThumbPath, buffer);
+      }
+    } catch {}
+  }
+
+  const ffmpegArgs = ["-y", "-i", mp3Path];
+  if (tempThumbPath && fs.existsSync(tempThumbPath)) {
+    ffmpegArgs.push("-i", tempThumbPath);
+    ffmpegArgs.push("-map", "0:a", "-map", "1:v");
+    ffmpegArgs.push("-metadata:s:v", 'title="Album cover"', "-metadata:s:v", 'comment="Cover (front)"');
+  } else {
+    ffmpegArgs.push("-map", "0");
+  }
+
+  ffmpegArgs.push(
+    "-c", "copy",
+    "-id3v2_version", "3",
+    "-metadata", `title=${title || ""}`,
+    "-metadata", `artist=${artist || ""}`,
+    "-metadata", `album=${album || (artist ? `${artist} - Single` : "Single")}`,
+    "-metadata", `date=${year || new Date().getFullYear()}`,
+    "-metadata", "comment=",
+    "-metadata", "description=",
+    "-metadata", "synopsis=",
+    tempOutput
+  );
+
+  return new Promise((resolve) => {
+    const proc = spawn("ffmpeg", ffmpegArgs);
+    proc.on("close", (code) => {
+      if (tempThumbPath && fs.existsSync(tempThumbPath)) {
+        try { fs.unlinkSync(tempThumbPath); } catch {}
+      }
+      if (code === 0 && fs.existsSync(tempOutput) && fs.statSync(tempOutput).size > 0) {
+        try {
+          fs.unlinkSync(mp3Path);
+          fs.renameSync(tempOutput, mp3Path);
+          resolve(true);
+          return;
+        } catch {}
+      }
+      if (fs.existsSync(tempOutput)) {
+        try { fs.unlinkSync(tempOutput); } catch {}
+      }
+      resolve(false);
+    });
+    proc.on("error", () => {
+      if (tempThumbPath && fs.existsSync(tempThumbPath)) {
+        try { fs.unlinkSync(tempThumbPath); } catch {}
+      }
+      if (fs.existsSync(tempOutput)) {
+        try { fs.unlinkSync(tempOutput); } catch {}
+      }
+      resolve(false);
+    });
+  });
 }
 
 export async function getVideoInfo(url) {
@@ -46,15 +233,15 @@ export async function getVideoInfo(url) {
   const cleanUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
   return new Promise((resolve) => {
-    // Timeout of 5 seconds for yt-dlp metadata
     let resolved = false;
 
+    // 12 seconds timeout to allow full metadata extraction
     const timeout = setTimeout(async () => {
       if (!resolved) {
         resolved = true;
         resolve(await getOEmbedFallback(videoId));
       }
-    }, 6000);
+    }, 12000);
 
     const proc = spawn("yt-dlp", [
       "--js-runtimes", "node",
@@ -93,10 +280,25 @@ export async function getVideoInfo(url) {
             data.thumbnail ||
             `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
 
+          const rawTitle = data.title || "Vídeo do YouTube";
+          const rawChannel = data.uploader || data.channel || "YouTube";
+
+          const cleanMusic = parseMusicMetadata(rawTitle, rawChannel, {
+            artist: data.artist,
+            track: data.track,
+            album: data.album,
+            release_year: data.release_year,
+            upload_date: data.upload_date,
+          });
+
           resolve({
             id: videoId,
-            title: data.title || "Vídeo do YouTube",
-            channel: data.uploader || data.channel || "YouTube",
+            title: cleanMusic.title,
+            rawTitle,
+            artist: cleanMusic.artist,
+            album: cleanMusic.album,
+            year: cleanMusic.year,
+            channel: rawChannel,
             duration: durationStr,
             views: viewsStr,
             thumbnail,
@@ -133,9 +335,15 @@ async function getOEmbedFallback(videoId) {
     }
   } catch {}
 
+  const cleanMusic = parseMusicMetadata(title, channel);
+
   return {
     id: videoId,
-    title,
+    title: cleanMusic.title,
+    rawTitle: title,
+    artist: cleanMusic.artist,
+    album: cleanMusic.album,
+    year: cleanMusic.year,
     channel,
     duration: "",
     views: "",
@@ -144,7 +352,16 @@ async function getOEmbedFallback(videoId) {
   };
 }
 
-export function startDownloadJob({ url, format = "video", quality = "720p (HD)" }) {
+export function startDownloadJob({
+  url,
+  format = "video",
+  quality = "720p (HD)",
+  customTitle,
+  customArtist,
+  customAlbum,
+  customYear,
+  thumbnailUrl,
+}) {
   const videoId = extractVideoId(url);
   if (!videoId) {
     throw new Error("URL do YouTube inválida.");
@@ -164,11 +381,19 @@ export function startDownloadJob({ url, format = "video", quality = "720p (HD)" 
     "--no-warnings",
   ];
 
+  let audioBitrate = "320K";
   if (isAudio) {
+    if (quality.includes("256")) audioBitrate = "256K";
+    else if (quality.includes("192")) audioBitrate = "192K";
+    else if (quality.includes("128")) audioBitrate = "128K";
+
     args.push(
       "-x",
       "--audio-format", "mp3",
-      "--audio-quality", "0",
+      "--audio-quality", audioBitrate,
+      "--embed-metadata",
+      "--embed-thumbnail",
+      "--convert-thumbnails", "jpg",
       "-o", outputTemplate,
       cleanUrl
     );
@@ -178,6 +403,7 @@ export function startDownloadJob({ url, format = "video", quality = "720p (HD)" 
     args.push(
       "-f", `bestvideo[height<=${height}]+bestaudio/best[height<=${height}]/best`,
       "--merge-output-format", "mp4",
+      "--embed-metadata",
       "-o", outputTemplate,
       cleanUrl
     );
@@ -191,7 +417,7 @@ export function startDownloadJob({ url, format = "video", quality = "720p (HD)" 
     progress: 0,
     speed: "",
     eta: "",
-    message: "Iniciando download...",
+    message: isAudio ? "Iniciando download da música..." : "Iniciando download do vídeo...",
     filePath: null,
     filename: null,
     error: null,
@@ -214,16 +440,8 @@ export function startDownloadJob({ url, format = "video", quality = "720p (HD)" 
   const proc = spawn("yt-dlp", args);
   job.proc = proc;
 
-  let titleExtracted = "";
-
   proc.stdout.on("data", (chunk) => {
     const text = chunk.toString();
-
-    // Check title/destination
-    const destMatch = text.match(/Destination:\s*(.+)$/m);
-    if (destMatch && !titleExtracted) {
-      titleExtracted = path.basename(destMatch[1].trim());
-    }
 
     // Match download progress: [download]  45.2% of 11.28MiB at 4.29MiB/s ETA 00:01
     const progMatch = text.match(/\[download\]\s+(\d+\.?\d*)%\s+of\s+~?([^\s]+)\s+at\s+([^\s]+)\s+ETA\s+([^\s]+)/);
@@ -240,9 +458,21 @@ export function startDownloadJob({ url, format = "video", quality = "720p (HD)" 
       }
     }
 
-    if (text.includes("[ExtractAudio]") || text.includes("[Merger]")) {
+    if (text.includes("[ThumbnailsConvertor]")) {
       job.status = "processing";
-      job.message = isAudio ? "Convertendo para MP3..." : "Processando e mesclando vídeo...";
+      job.message = "Processando capa oficial em alta resolução...";
+    } else if (text.includes("[ExtractAudio]")) {
+      job.status = "processing";
+      job.message = `Convertendo para MP3 (${audioBitrate.replace("K", "kbps")})...`;
+    } else if (text.includes("[EmbedThumbnail]")) {
+      job.status = "processing";
+      job.message = "Embutindo capa oficial no arquivo MP3...";
+    } else if (text.includes("[Metadata]")) {
+      job.status = "processing";
+      job.message = "Gravando metadados de artista, título e álbum...";
+    } else if (text.includes("[Merger]")) {
+      job.status = "processing";
+      job.message = "Mesclando vídeo e áudio em alta definição...";
     }
   });
 
@@ -251,21 +481,61 @@ export function startDownloadJob({ url, format = "video", quality = "720p (HD)" 
     stderrText += chunk.toString();
   });
 
-  proc.on("close", (code) => {
+  proc.on("close", async (code) => {
     if (code === 0) {
-      // Find output file
       try {
         const prefix = `bearcatch_${jobId}`;
-        const files = fs.readdirSync(tmpDir).filter((f) => f.startsWith(prefix));
-        if (files.length > 0) {
-          const finalFile = path.join(tmpDir, files[0]);
+        const targetExt = isAudio ? ".mp3" : ".mp4";
+        const allTmpFiles = fs.readdirSync(tmpDir).filter((f) => f.startsWith(prefix));
+        const matchedFiles = allTmpFiles.filter((f) => f.endsWith(targetExt));
+        const filesToPick = matchedFiles.length > 0 ? matchedFiles : allTmpFiles;
+
+        if (filesToPick.length > 0) {
+          const finalFile = path.join(tmpDir, filesToPick[0]);
           job.filePath = finalFile;
+
+          // Clean up any remaining temporary image files (e.g. bearcatch_job.jpg)
+          for (const f of allTmpFiles) {
+            if (f !== filesToPick[0] && (f.endsWith(".jpg") || f.endsWith(".webp") || f.endsWith(".webm") || f.endsWith(".part"))) {
+              try { fs.unlinkSync(path.join(tmpDir, f)); } catch {}
+            }
+          }
+
+          // If audio, apply ID3v2.3 tagger and ensure cover art
+          if (isAudio) {
+            job.message = "Finalizando tags ID3 e capa oficial...";
+            await ensureMp3TagsAndCover(finalFile, {
+              title: customTitle,
+              artist: customArtist,
+              album: customAlbum,
+              year: customYear,
+              thumbnailUrl: thumbnailUrl || `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
+            });
+          }
+
+          // Calculate clean human-readable filename
+          let finalName = "";
+          if (isAudio) {
+            if (customArtist && customTitle) {
+              finalName = `${customArtist} - ${customTitle}.mp3`;
+            } else if (customTitle) {
+              finalName = `${customTitle}.mp3`;
+            } else {
+              finalName = `musica_${videoId}.mp3`;
+            }
+          } else {
+            finalName = customTitle ? `${customTitle}.mp4` : `video_${videoId}.mp4`;
+          }
+
+          const safeFinalName = sanitizeFilename(finalName);
+          const ext = isAudio ? ".mp3" : ".mp4";
+          job.filename = safeFinalName.toLowerCase().endsWith(ext)
+            ? safeFinalName
+            : `${safeFinalName}${ext}`;
+
           job.status = "ready";
           job.progress = 100;
-          job.message = "Download concluído!";
-          const ext = path.extname(finalFile) || (isAudio ? ".mp3" : ".mp4");
-          const safeTitle = titleExtracted ? sanitizeFilename(titleExtracted) : `video_${videoId}`;
-          job.filename = safeTitle.endsWith(ext) ? safeTitle : `${safeTitle}${ext}`;
+          job.message = "Download concluído com sucesso!";
           return;
         }
       } catch (err) {

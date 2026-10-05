@@ -58,6 +58,10 @@ const Index = () => {
     let duration = "";
     let views = "";
     let thumbnail = `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
+    let artist: string | undefined = undefined;
+    let album: string | undefined = undefined;
+    let year: string | undefined = undefined;
+    let rawTitle: string | undefined = undefined;
 
     // 1. Try local backend /api/info
     try {
@@ -66,6 +70,10 @@ const Index = () => {
         const result = await res.json();
         if (result.success && result.data) {
           title = result.data.title || title;
+          rawTitle = result.data.rawTitle || result.data.title;
+          artist = result.data.artist;
+          album = result.data.album;
+          year = result.data.year;
           channel = result.data.channel || channel;
           duration = result.data.duration || "";
           views = result.data.views || "";
@@ -90,6 +98,10 @@ const Index = () => {
 
     const videoData: VideoInfo = {
       title,
+      rawTitle,
+      artist,
+      album,
+      year,
       thumbnail,
       duration,
       views,
@@ -107,7 +119,11 @@ const Index = () => {
     }
   };
 
-  const handleDownload = async (format: "video" | "audio", quality: string) => {
+  const handleDownload = async (
+    format: "video" | "audio",
+    quality: string,
+    meta?: { title?: string; artist?: string }
+  ) => {
     if (!currentUrl) return;
 
     if (isDownloading) return;
@@ -122,7 +138,7 @@ const Index = () => {
 
     toast({
       title: "Iniciando download...",
-      description: `Processando vídeo em ${format === "audio" ? "MP3" : quality}. Aguarde...`,
+      description: `Processando ${format === "audio" ? "áudio MP3 com capa e tags" : quality}. Aguarde...`,
     });
 
     if (pollIntervalRef.current) {
@@ -134,7 +150,16 @@ const Index = () => {
       const startRes = await fetch("/api/start-download", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: currentUrl, format, quality }),
+        body: JSON.stringify({
+          url: currentUrl,
+          format,
+          quality,
+          title: meta?.title || video?.title,
+          artist: meta?.artist || video?.artist,
+          album: video?.album,
+          year: video?.year,
+          thumbnail: video?.thumbnail,
+        }),
       });
 
       if (!startRes.ok) {
@@ -267,6 +292,7 @@ const Index = () => {
             >
               <VideoPreview video={video} />
               <FormatSelector
+                videoInfo={video}
                 onDownload={handleDownload}
                 isDownloading={isDownloading}
                 downloadProgress={downloadProgress}
