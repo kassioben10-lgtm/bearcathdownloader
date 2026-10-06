@@ -26,7 +26,16 @@ export function extractVideoId(url) {
   if (shortMatch) return shortMatch[1];
   const watchMatch = trimmed.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
   if (watchMatch) return watchMatch[1];
-  if (/^[a-zA-Z0-9_-]{11}$/.test(trimmed)) return trimmed;
+  if (/^[a-zA-Z0-9_-]{11}$/.test(trimmed) && !trimmed.startsWith("PL")) return trimmed;
+  return null;
+}
+
+export function extractPlaylistId(url) {
+  if (!url) return null;
+  const trimmed = url.trim();
+  const listMatch = trimmed.match(/[?&]list=([a-zA-Z0-9_-]+)/i);
+  if (listMatch) return listMatch[1];
+  if (/^(?:PL|UU|LL|FL|RD|OLAK)[a-zA-Z0-9_-]{10,}$/i.test(trimmed)) return trimmed;
   return null;
 }
 
@@ -226,6 +235,7 @@ export async function ensureMp3TagsAndCover(mp3Path, { title, artist, album, yea
 
 export async function getVideoInfo(url) {
   const videoId = extractVideoId(url);
+  const playlistId = extractPlaylistId(url);
   if (!videoId) {
     throw new Error("URL do YouTube inválida.");
   }
@@ -239,13 +249,14 @@ export async function getVideoInfo(url) {
     const timeout = setTimeout(async () => {
       if (!resolved) {
         resolved = true;
-        resolve(await getOEmbedFallback(videoId));
+        resolve(await getOEmbedFallback(videoId, playlistId));
       }
     }, 12000);
 
     const proc = spawn("yt-dlp", [
       "--js-runtimes", "node",
       "--remote-components", "ejs:github",
+      "--extractor-args", "youtube:player_client=android,web",
       "--dump-json",
       "--no-playlist",
       cleanUrl,
@@ -293,6 +304,7 @@ export async function getVideoInfo(url) {
 
           resolve({
             id: videoId,
+            playlistId: playlistId || null,
             title: cleanMusic.title,
             rawTitle,
             artist: cleanMusic.artist,
@@ -309,19 +321,19 @@ export async function getVideoInfo(url) {
       }
 
       // Fallback to oembed if yt-dlp info failed
-      resolve(await getOEmbedFallback(videoId));
+      resolve(await getOEmbedFallback(videoId, playlistId));
     });
 
     proc.on("error", async () => {
       clearTimeout(timeout);
       if (resolved) return;
       resolved = true;
-      resolve(await getOEmbedFallback(videoId));
+      resolve(await getOEmbedFallback(videoId, playlistId));
     });
   });
 }
 
-async function getOEmbedFallback(videoId) {
+async function getOEmbedFallback(videoId, playlistId = null) {
   let title = "Vídeo do YouTube";
   let channel = "YouTube";
   try {
@@ -339,6 +351,7 @@ async function getOEmbedFallback(videoId) {
 
   return {
     id: videoId,
+    playlistId: playlistId || null,
     title: cleanMusic.title,
     rawTitle: title,
     artist: cleanMusic.artist,
@@ -377,6 +390,7 @@ export function startDownloadJob({
   let args = [
     "--js-runtimes", "node",
     "--remote-components", "ejs:github",
+    "--extractor-args", "youtube:player_client=android,web",
     "--no-playlist",
     "--no-warnings",
   ];
@@ -555,6 +569,348 @@ export function startDownloadJob({
   return jobId;
 }
 
+export async function getPlaylistInfo(urlOrId) {
+  const playlistId = extractPlaylistId(urlOrId) || urlOrId;
+  if (!playlistId) {
+    throw new Error("URL ou ID de Playlist inválido.");
+  }
+
+  const playlistUrl = `https://www.youtube.com/playlist?list=${playlistId}`;
+
+  return new Promise((resolve, reject) => {
+    const proc = spawn("yt-dlp", [
+      "--js-runtimes", "node",
+      "--remote-components", "ejs:github",
+      "--flat-playlist",
+      "--dump-single-json",
+      playlistUrl,
+    ]);
+
+    let stdout = "";
+    let stderr = "";
+    proc.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    proc.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    proc.on("close", (code) => {
+      if (code === 0 && stdout) {
+        try {
+          const data = JSON.parse(stdout);
+          const rawEntries = Array.isArray(data.entries) ? data.entries : [];
+
+          const entries = rawEntries.map((item, index) => {
+            const rawTitle = item.title || `Faixa ${index + 1}`;
+            const clean = parseMusicMetadata(rawTitle, item.uploader || item.channel || data.uploader || "");
+
+            let durationStr = "";
+            if (item.duration) {
+              const mins = Math.floor(item.duration / 60);
+              const secs = item.duration % 60;
+              durationStr = `${mins}:${secs < 10 ? "0" : ""}${secs}`;
+            }
+
+            const thumb = (item.thumbnails && item.thumbnails.length > 0)
+              ? item.thumbnails[item.thumbnails.length - 1].url
+              : (item.id ? `https://img.youtube.com/vi/${item.id}/hqdefault.jpg` : "");
+
+            return {
+              id: item.id || `track_${index}`,
+              title: clean.title,
+              rawTitle,
+              artist: clean.artist,
+              album: clean.album,
+              year: clean.year,
+              channel: item.uploader || item.channel || "",
+              duration: durationStr,
+              thumbnail: thumb,
+              url: item.url || (item.id ? `https://www.youtube.com/watch?v=${item.id}` : ""),
+              index: index + 1,
+            };
+          });
+
+          const playlistThumb = (data.thumbnails && data.thumbnails.length > 0)
+            ? data.thumbnails[data.thumbnails.length - 1].url
+            : (entries[0]?.thumbnail || "");
+
+          resolve({
+            id: playlistId,
+            title: data.title || "Playlist do YouTube",
+            uploader: data.uploader || data.channel || "YouTube",
+            description: data.description || "",
+            thumbnail: playlistThumb,
+            url: playlistUrl,
+            itemCount: entries.length,
+            entries,
+          });
+          return;
+        } catch (err) {
+          reject(new Error("Erro ao interpretar dados da playlist: " + err.message));
+          return;
+        }
+      }
+      reject(new Error(stderr.slice(-300) || "Falha ao carregar informações da playlist."));
+    });
+
+    proc.on("error", (err) => {
+      reject(new Error("Falha ao iniciar yt-dlp: " + err.message));
+    });
+  });
+}
+
+export function startPlaylistDownloadJob({
+  playlistId,
+  playlistTitle = "Playlist",
+  format = "audio",
+  quality = "320kbps (Melhor Qualidade)",
+  selectedVideoIds = null,
+  selectedIndices = null,
+}) {
+  const plId = playlistId || "playlist";
+  const jobId = "pl_job_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+  const tmpDir = os.tmpdir();
+  const jobDir = path.join(tmpDir, `bearcatch_${jobId}`);
+  fs.mkdirSync(jobDir, { recursive: true });
+
+  const isAudio = format === "audio";
+  let audioBitrate = "320K";
+  if (isAudio) {
+    if (quality.includes("256")) audioBitrate = "256K";
+    else if (quality.includes("192")) audioBitrate = "192K";
+    else if (quality.includes("128")) audioBitrate = "128K";
+  }
+
+  const outputTemplate = path.join(jobDir, "%(playlist_index&{:02d} - |)s%(title)s.%(ext)s");
+
+  let args = [
+    "--js-runtimes", "node",
+    "--remote-components", "ejs:github",
+    "--no-warnings",
+    "--ignore-errors",
+  ];
+
+  if (isAudio) {
+    args.push(
+      "-x",
+      "--audio-format", "mp3",
+      "--audio-quality", audioBitrate,
+      "--embed-metadata",
+      "--embed-thumbnail",
+      "--convert-thumbnails", "jpg",
+      "-o", outputTemplate
+    );
+  } else {
+    const heightMatch = quality.match(/(\d+)p/);
+    const height = heightMatch ? heightMatch[1] : "1080";
+    args.push(
+      "-f", `bestvideo[height<=${height}]+bestaudio/best[height<=${height}]/best`,
+      "--merge-output-format", "mp4",
+      "--embed-metadata",
+      "-o", outputTemplate
+    );
+  }
+
+  let batchFile = null;
+  if (plId && plId !== "playlist") {
+    if (Array.isArray(selectedIndices) && selectedIndices.length > 0) {
+      args.push("--playlist-items", selectedIndices.join(","));
+    }
+    args.push(`https://www.youtube.com/playlist?list=${plId}`);
+  } else if (Array.isArray(selectedVideoIds) && selectedVideoIds.length > 0) {
+    batchFile = path.join(jobDir, "batch_urls.txt");
+    const urls = selectedVideoIds.map((id) => `https://www.youtube.com/watch?v=${id}`);
+    fs.writeFileSync(batchFile, urls.join("\n"), "utf8");
+    args.push("--batch-file", batchFile);
+  } else {
+    args.push(`https://www.youtube.com/playlist?list=${plId}`);
+  }
+
+  const initialTotal =
+    Array.isArray(selectedIndices) && selectedIndices.length > 0
+      ? selectedIndices.length
+      : Array.isArray(selectedVideoIds) && selectedVideoIds.length > 0
+      ? selectedVideoIds.length
+      : 1;
+  const job = {
+    id: jobId,
+    isPlaylist: true,
+    playlistId: plId,
+    playlistTitle,
+    format: isAudio ? "mp3" : "mp4",
+    status: "downloading",
+    progress: 0,
+    speed: "",
+    eta: "",
+    currentItem: 1,
+    totalItems: initialTotal,
+    message: "Iniciando download da playlist...",
+    filePath: null,
+    filename: null,
+    jobDir,
+    batchFile,
+    error: null,
+    createdAt: Date.now(),
+  };
+
+  jobs.set(jobId, job);
+
+  // Auto clean after 20 minutes
+  setTimeout(() => {
+    cleanupJob(jobId);
+  }, 20 * 60 * 1000);
+
+  const proc = spawn("yt-dlp", args);
+  job.proc = proc;
+
+  proc.stdout.on("data", (chunk) => {
+    const text = chunk.toString();
+
+    // Match total items in playlist: Downloading 12 items of 12
+    const totalMatch = text.match(/Downloading\s+(\d+)\s+items/i);
+    if (totalMatch) {
+      job.totalItems = parseInt(totalMatch[1], 10);
+    }
+
+    // Match current item: [download] Downloading item 1 of 12
+    const itemMatch = text.match(/\[download\]\s+Downloading\s+item\s+(\d+)\s+of\s+(\d+)/i);
+    if (itemMatch) {
+      job.currentItem = parseInt(itemMatch[1], 10);
+      job.totalItems = parseInt(itemMatch[2], 10);
+      job.message = `Baixando faixa ${job.currentItem} de ${job.totalItems}...`;
+    }
+
+    // Match item progress: [download]  45.2% of 11.28MiB at 4.29MiB/s ETA 00:01
+    const progMatch = text.match(/\[download\]\s+(\d+\.?\d*)%\s+of\s+~?([^\s]+)\s+at\s+([^\s]+)\s+ETA\s+([^\s]+)/);
+    if (progMatch) {
+      const itemProg = parseFloat(progMatch[1]);
+      job.speed = progMatch[3];
+      job.eta = progMatch[4];
+      const cur = job.currentItem || 1;
+      const tot = job.totalItems || 1;
+      const overall = Math.min(
+        Math.round(((cur - 1) / tot) * 100 + (itemProg / tot)),
+        97
+      );
+      job.progress = overall;
+      job.message = `Baixando faixa ${cur} de ${tot} (${overall}%)`;
+    }
+
+    if (text.includes("[ExtractAudio]") || text.includes("[EmbedThumbnail]")) {
+      job.message = `Processando metadados e tags da faixa ${job.currentItem || 1}...`;
+    }
+  });
+
+  let stderrText = "";
+  proc.stderr.on("data", (chunk) => {
+    stderrText += chunk.toString();
+  });
+
+  proc.on("close", async (code) => {
+    try {
+      // Find all media files in jobDir
+      const allFiles = fs.readdirSync(jobDir);
+      const targetExt = isAudio ? ".mp3" : ".mp4";
+      const mediaFiles = allFiles.filter((f) => f.endsWith(targetExt));
+
+      if (mediaFiles.length > 0) {
+        job.status = "packaging";
+        job.progress = 98;
+        job.message = `Compactando ${mediaFiles.length} arquivos em pacote ZIP...`;
+
+        const safeTitle = sanitizeFilename(playlistTitle || "Playlist");
+        const zipFilename = `${safeTitle}.zip`;
+        const zipPath = path.join(tmpDir, `bearcatch_${jobId}.zip`);
+
+        // Pack files into ZIP using PowerShell on Windows or tar on Unix
+        const onZipSuccess = () => {
+          job.filePath = zipPath;
+          job.filename = zipFilename;
+          job.status = "ready";
+          job.progress = 100;
+          job.message = `Playlist concluída com sucesso! (${mediaFiles.length} faixas)`;
+
+          // Clean up unzipped files in jobDir
+          try {
+            for (const f of allFiles) {
+              try { fs.unlinkSync(path.join(jobDir, f)); } catch {}
+            }
+            fs.rmdirSync(jobDir);
+          } catch {}
+        };
+
+        const tryTar = () => {
+          const tarProc = spawn("tar", ["-a", "-cf", zipPath, ...mediaFiles], { cwd: jobDir });
+          tarProc.on("close", (tCode) => {
+            if (tCode === 0 && fs.existsSync(zipPath) && fs.statSync(zipPath).size > 22) {
+              onZipSuccess();
+            } else {
+              job.status = "error";
+              job.error = "Erro ao compactar arquivos da playlist em ZIP.";
+            }
+          });
+          tarProc.on("error", (err) => {
+            job.status = "error";
+            job.error = "Falha ao executar compactador ZIP: " + err.message;
+          });
+        };
+
+        const tryZip = () => {
+          const zipProc = spawn("zip", ["-j", zipPath, ...mediaFiles], { cwd: jobDir });
+          zipProc.on("close", (zCode) => {
+            if (zCode === 0 && fs.existsSync(zipPath) && fs.statSync(zipPath).size > 22) {
+              onZipSuccess();
+            } else {
+              tryTar();
+            }
+          });
+          zipProc.on("error", () => {
+            tryTar();
+          });
+        };
+
+        if (process.platform === "win32") {
+          const ps = spawn("powershell", [
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            `Compress-Archive -Path "${jobDir}\\*" -DestinationPath "${zipPath}" -Force`
+          ]);
+
+          ps.on("close", (psCode) => {
+            if (psCode === 0 && fs.existsSync(zipPath) && fs.statSync(zipPath).size > 22) {
+              onZipSuccess();
+            } else {
+              tryTar();
+            }
+          });
+
+          ps.on("error", () => {
+            tryTar();
+          });
+        } else {
+          tryZip();
+        }
+
+        return;
+      }
+    } catch (err) {
+      job.error = "Erro ao processar arquivos da playlist: " + err.message;
+    }
+
+    job.status = "error";
+    job.error = stderrText.slice(-300) || "Falha no download da playlist.";
+  });
+
+  proc.on("error", (err) => {
+    job.status = "error";
+    job.error = "Falha ao iniciar yt-dlp: " + err.message;
+  });
+
+  return jobId;
+}
+
 export function getJob(jobId) {
   return jobs.get(jobId);
 }
@@ -565,6 +921,11 @@ export function cleanupJob(jobId) {
     if (job.filePath && fs.existsSync(job.filePath)) {
       try {
         fs.unlinkSync(job.filePath);
+      } catch {}
+    }
+    if (job.jobDir && fs.existsSync(job.jobDir)) {
+      try {
+        fs.rmSync(job.jobDir, { recursive: true, force: true });
       } catch {}
     }
     jobs.delete(jobId);

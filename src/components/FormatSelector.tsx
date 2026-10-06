@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { useState, useEffect } from "react";
 import { type VideoInfo } from "./VideoPreview";
+import { getApiUrl } from "@/lib/api";
 
 interface FormatSelectorProps {
   onDownload: (
@@ -288,7 +289,7 @@ const FormatSelector = ({
             </span>
           </div>
           <a
-            href={`/api/file?jobId=${downloadReadyFile.jobId}`}
+            href={getApiUrl(`/api/file?jobId=${downloadReadyFile.jobId}`)}
             download={downloadReadyFile.filename}
             className="text-xs text-primary hover:underline font-semibold"
           >

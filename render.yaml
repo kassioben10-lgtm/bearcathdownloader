@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: bearcathdownloader
+    env: docker
+    plan: free
+    region: oregon
+    dockerfilePath: Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production

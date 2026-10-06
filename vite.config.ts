@@ -19,6 +19,7 @@ function downloaderPlugin() {
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
+  base: "./",
   server: {
     host: "::",
     port: 8080,

@@ -63,13 +63,7 @@ const UrlInput = ({ onSubmit, isLoading, isDownloading }: UrlInputProps) => {
             type="text"
             value={url}
             onChange={(e) => handleUrlChange(e.target.value)}
-            onPaste={(e) => {
-              const pasted = e.clipboardData.getData("text");
-              if (pasted && isValidYouTubeUrl(pasted.trim())) {
-                setTimeout(() => onSubmit(pasted.trim(), autoDownload), 50);
-              }
-            }}
-            placeholder="Cole o link do YouTube aqui..."
+            placeholder="Cole o link do YouTube ou Playlist aqui..."
             className="flex-1 bg-transparent border-none outline-none text-foreground placeholder:text-muted-foreground text-base py-2 px-1"
           />
 
@@ -126,7 +120,7 @@ const UrlInput = ({ onSubmit, isLoading, isDownloading }: UrlInputProps) => {
         </label>
         <span className="flex items-center gap-1 text-primary/80">
           <Sparkles className="h-3 w-3" />
-          Suporta vídeos normais, Shorts e lives
+          Suporta vídeos, músicas, Shorts e Playlists
         </span>
       </div>
     </motion.div>

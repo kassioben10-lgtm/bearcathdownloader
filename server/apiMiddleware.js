@@ -6,6 +6,9 @@ import {
   getJob,
   cleanupJob,
   extractVideoId,
+  extractPlaylistId,
+  getPlaylistInfo,
+  startPlaylistDownloadJob,
 } from "./downloader.js";
 
 export function createApiMiddleware() {
@@ -46,11 +49,29 @@ export function createApiMiddleware() {
         if (!url) {
           return sendJson(400, { error: "Parâmetro url é obrigatório." });
         }
-        const info = await getVideoInfo(url);
-        return sendJson(200, { success: true, data: info });
+        try {
+          const info = await getVideoInfo(url);
+          return sendJson(200, { success: true, data: info });
+        } catch (err) {
+          return sendJson(500, { error: err.message || "Erro ao obter informações do vídeo." });
+        }
       }
 
-      // 3. Start Download Job
+      // 2.1 Playlist Info
+      if (pathname === "/api/playlist-info" && req.method === "GET") {
+        const url = parsedUrl.searchParams.get("url") || parsedUrl.searchParams.get("list");
+        if (!url) {
+          return sendJson(400, { error: "Parâmetro url ou list é obrigatório." });
+        }
+        try {
+          const info = await getPlaylistInfo(url);
+          return sendJson(200, { success: true, data: info });
+        } catch (err) {
+          return sendJson(500, { error: err.message || "Erro ao obter informações da playlist." });
+        }
+      }
+
+      // 3. Start Single Download Job
       if (pathname === "/api/start-download" && req.method === "POST") {
         let bodyText = "";
         req.on("data", (chunk) => {
@@ -104,6 +125,40 @@ export function createApiMiddleware() {
         return;
       }
 
+      // 3.1 Start Playlist Download Job
+      if (pathname === "/api/start-playlist-download" && req.method === "POST") {
+        let bodyText = "";
+        req.on("data", (chunk) => {
+          bodyText += chunk.toString();
+        });
+
+        req.on("end", async () => {
+          try {
+            const body = bodyText ? JSON.parse(bodyText) : {};
+            const { url, playlistId, playlistTitle, format, quality, selectedVideoIds, selectedIndices } = body;
+            const finalPlaylistId = playlistId || extractPlaylistId(url);
+
+            if (!finalPlaylistId && (!selectedVideoIds || selectedVideoIds.length === 0)) {
+              return sendJson(400, { error: "ID da playlist ou faixas selecionadas são obrigatórios." });
+            }
+
+            const jobId = startPlaylistDownloadJob({
+              playlistId: finalPlaylistId,
+              playlistTitle: playlistTitle || "Playlist",
+              format: format || "audio",
+              quality: quality || "320kbps (Melhor Qualidade)",
+              selectedVideoIds: selectedVideoIds || null,
+              selectedIndices: selectedIndices || null,
+            });
+
+            return sendJson(200, { success: true, jobId });
+          } catch (err) {
+            return sendJson(500, { error: err.message || "Erro ao iniciar download da playlist." });
+          }
+        });
+        return;
+      }
+
       // 4. Check Download Progress
       if (pathname === "/api/progress" && req.method === "GET") {
         const jobId = parsedUrl.searchParams.get("jobId");
@@ -124,6 +179,9 @@ export function createApiMiddleware() {
           eta: job.eta,
           message: job.message,
           filename: job.filename,
+          isPlaylist: !!job.isPlaylist,
+          currentItem: job.currentItem || 1,
+          totalItems: job.totalItems || 1,
           error: job.error,
         });
       }
@@ -141,15 +199,28 @@ export function createApiMiddleware() {
         }
 
         const stat = fs.statSync(job.filePath);
-        const filename = job.filename || (job.format === "mp3" ? "audio.mp3" : "video.mp4");
+        const filename =
+          job.filename ||
+          (job.isPlaylist
+            ? "playlist.zip"
+            : job.format === "mp3"
+            ? "audio.mp3"
+            : "video.mp4");
+
         const asciiFilename = filename.replace(/[^\x20-\x7E]/g, "_").replace(/"/g, "");
         const encodedFilename = encodeURIComponent(filename);
 
+        let contentType = "application/octet-stream";
+        if (filename.toLowerCase().endsWith(".zip")) {
+          contentType = "application/zip";
+        } else if (filename.toLowerCase().endsWith(".mp3") || job.format === "mp3") {
+          contentType = "audio/mpeg";
+        } else if (filename.toLowerCase().endsWith(".mp4") || job.format === "mp4") {
+          contentType = "video/mp4";
+        }
+
         res.statusCode = 200;
-        res.setHeader(
-          "Content-Type",
-          job.format === "mp3" ? "audio/mpeg" : "video/mp4"
-        );
+        res.setHeader("Content-Type", contentType);
         res.setHeader(
           "Content-Disposition",
           `attachment; filename="${asciiFilename}"; filename*=UTF-8''${encodedFilename}`
@@ -160,7 +231,7 @@ export function createApiMiddleware() {
         readStream.pipe(res);
 
         readStream.on("close", () => {
-          setTimeout(() => cleanupJob(jobId), 1000);
+          setTimeout(() => cleanupJob(jobId), 1500);
         });
 
         readStream.on("error", (err) => {

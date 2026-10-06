@@ -1,48 +1,105 @@
 import { useState, useRef, useEffect } from "react";
-import { motion } from "framer-motion";
-import { Download, Zap, Shield, Globe, Sparkles } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import {
+  Download,
+  Zap,
+  Shield,
+  Globe,
+  Sparkles,
+  Music,
+  ListMusic,
+  FolderArchive,
+  Layers,
+  Loader2,
+} from "lucide-react";
 import UrlInput from "@/components/UrlInput";
 import VideoPreview, { type VideoInfo } from "@/components/VideoPreview";
 import FormatSelector from "@/components/FormatSelector";
+import PlaylistPreview from "@/components/PlaylistPreview";
+import PlaylistChoicePrompt from "@/components/PlaylistChoicePrompt";
 import { useToast } from "@/hooks/use-toast";
-import { extractVideoId, isValidYouTubeUrl } from "@/lib/youtube";
+import {
+  parseYouTubeUrl,
+  isValidYouTubeUrl,
+  type PlaylistInfo,
+  type PlaylistEntry,
+} from "@/lib/youtube";
+import { getApiUrl } from "@/lib/api";
 import bearLogo from "@/assets/bear-logo.png";
 
 const features = [
-  { icon: Zap, title: "Super Rápido", desc: "Download em velocidade máxima diretamente no seu dispositivo" },
-  { icon: Shield, title: "100% Seguro", desc: "Sem anúncios invasivos, sem rastreadores ou malware" },
-  { icon: Globe, title: "Sem Limites", desc: "Baixe vídeos em até 4K ou áudios MP3 em 320kbps ilimitados" },
+  {
+    icon: Zap,
+    title: "Super Rápido & Turbo",
+    desc: "Download em velocidade máxima e sem limites diretamente no seu dispositivo",
+  },
+  {
+    icon: ListMusic,
+    title: "Compatível com Playlists",
+    desc: "Baixe a música avulsa ou a playlist completa compactada em um arquivo ZIP",
+  },
+  {
+    icon: Shield,
+    title: "100% Seguro & Limpo",
+    desc: "Capa HD oficial embutida, metadados ID3 completos e sem anúncios invasivos",
+  },
 ];
 
 const Index = () => {
   const [isLoading, setIsLoading] = useState(false);
+  const [currentUrl, setCurrentUrl] = useState("");
+
+  // Single video states
+  const [video, setVideo] = useState<VideoInfo | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [downloadSpeed, setDownloadSpeed] = useState("");
   const [downloadEta, setDownloadEta] = useState("");
   const [downloadMessage, setDownloadMessage] = useState("");
   const [downloadError, setDownloadError] = useState<string | null>(null);
-  const [downloadReadyFile, setDownloadReadyFile] = useState<{ jobId: string; filename: string } | null>(null);
+  const [downloadReadyFile, setDownloadReadyFile] = useState<{
+    jobId: string;
+    filename: string;
+  } | null>(null);
 
-  const [video, setVideo] = useState<VideoInfo | null>(null);
-  const [currentUrl, setCurrentUrl] = useState("");
+  // Playlist states
+  const [playlist, setPlaylist] = useState<PlaylistInfo | null>(null);
+  const [isPlaylistDownloading, setIsPlaylistDownloading] = useState(false);
+  const [playlistProgress, setPlaylistProgress] = useState(0);
+  const [playlistSpeed, setPlaylistSpeed] = useState("");
+  const [playlistEta, setPlaylistEta] = useState("");
+  const [playlistMessage, setPlaylistMessage] = useState("");
+  const [playlistError, setPlaylistError] = useState<string | null>(null);
+  const [playlistReadyFile, setPlaylistReadyFile] = useState<{
+    jobId: string;
+    filename: string;
+  } | null>(null);
+
+  // Active view ("video" or "playlist") when link has both
+  const [activeView, setActiveView] = useState<"video" | "playlist">("video");
+  const [showChoicePrompt, setShowChoicePrompt] = useState(false);
+
   const { toast } = useToast();
-
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const playlistPollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Clear polling on unmount
+  // Clear polling intervals on unmount
   useEffect(() => {
     return () => {
       if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+      if (playlistPollIntervalRef.current)
+        clearInterval(playlistPollIntervalRef.current);
     };
   }, []);
 
   const handleSearch = async (url: string, autoDownload: boolean = false) => {
-    const videoId = extractVideoId(url);
-    if (!videoId) {
+    const analysis = parseYouTubeUrl(url);
+
+    if (!analysis.videoId && !analysis.playlistId) {
       toast({
         title: "URL inválida",
-        description: "Por favor, insira um link válido do YouTube (vídeo, shorts ou lives).",
+        description:
+          "Por favor, insira um link válido do YouTube (vídeo, música, Shorts ou playlist).",
         variant: "destructive",
       });
       return;
@@ -51,7 +108,68 @@ const Index = () => {
     setIsLoading(true);
     setDownloadError(null);
     setDownloadReadyFile(null);
+    setPlaylistError(null);
+    setPlaylistReadyFile(null);
     setCurrentUrl(url);
+
+    // If it's a pure playlist URL (no single video ID attached)
+    if (analysis.isPlaylistOnly) {
+      setVideo(null);
+      setShowChoicePrompt(false);
+      setActiveView("playlist");
+
+      try {
+        const res = await fetch(
+          getApiUrl(`/api/playlist-info?list=${encodeURIComponent(analysis.playlistId!)}`)
+        );
+        if (res.ok) {
+          const result = await res.json();
+          if (result.success && result.data) {
+            setPlaylist(result.data);
+            setIsLoading(false);
+            return;
+          }
+        }
+        throw new Error("Falha ao carregar playlist");
+      } catch (err: any) {
+        setIsLoading(false);
+        toast({
+          title: "Erro na playlist",
+          description:
+            err.message || "Não foi possível carregar os dados da playlist.",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
+    // If it's a video attached to a playlist (e.g. watch?v=...&list=...)
+    if (analysis.isVideoWithPlaylist) {
+      setShowChoicePrompt(true);
+      setActiveView("video");
+
+      // Fetch single video info
+      fetchVideoData(analysis.cleanVideoUrl || url);
+
+      // Also prefetch playlist info in parallel
+      fetchPlaylistData(analysis.cleanPlaylistUrl || url);
+      return;
+    }
+
+    // Normal single video (no playlist)
+    setShowChoicePrompt(false);
+    setPlaylist(null);
+    setActiveView("video");
+    await fetchVideoData(analysis.cleanVideoUrl || url, autoDownload);
+  };
+
+  const fetchVideoData = async (videoUrl: string, autoDownload = false) => {
+    const analysis = parseYouTubeUrl(videoUrl);
+    const videoId = analysis.videoId;
+    if (!videoId) {
+      setIsLoading(false);
+      return;
+    }
 
     let title = "Vídeo do YouTube";
     let channel = "YouTube";
@@ -63,9 +181,8 @@ const Index = () => {
     let year: string | undefined = undefined;
     let rawTitle: string | undefined = undefined;
 
-    // 1. Try local backend /api/info
     try {
-      const res = await fetch(`/api/info?url=${encodeURIComponent(url)}`);
+      const res = await fetch(getApiUrl(`/api/info?url=${encodeURIComponent(videoUrl)}`));
       if (res.ok) {
         const result = await res.json();
         if (result.success && result.data) {
@@ -83,7 +200,6 @@ const Index = () => {
         throw new Error("Local API fallback");
       }
     } catch {
-      // Fallback to oembed
       try {
         const oembedRes = await fetch(
           `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`
@@ -111,11 +227,30 @@ const Index = () => {
     setVideo(videoData);
     setIsLoading(false);
 
-    // If auto-download was requested upon pasting, start right away!
-    if (autoDownload) {
+    // If autoDownload was requested on a normal single video
+    if (autoDownload && !analysis.isVideoWithPlaylist) {
       setTimeout(() => {
         handleDownload("video", "1080p (Full HD)");
       }, 100);
+    }
+  };
+
+  const fetchPlaylistData = async (playlistUrl: string) => {
+    const analysis = parseYouTubeUrl(playlistUrl);
+    if (!analysis.playlistId) return;
+
+    try {
+      const res = await fetch(
+        getApiUrl(`/api/playlist-info?list=${encodeURIComponent(analysis.playlistId)}`)
+      );
+      if (res.ok) {
+        const result = await res.json();
+        if (result.success && result.data) {
+          setPlaylist(result.data);
+        }
+      }
+    } catch (err) {
+      console.warn("Could not prefetch playlist:", err);
     }
   };
 
@@ -124,9 +259,7 @@ const Index = () => {
     quality: string,
     meta?: { title?: string; artist?: string }
   ) => {
-    if (!currentUrl) return;
-
-    if (isDownloading) return;
+    if (!currentUrl || isDownloading) return;
 
     setIsDownloading(true);
     setDownloadProgress(0);
@@ -138,20 +271,22 @@ const Index = () => {
 
     toast({
       title: "Iniciando download...",
-      description: `Processando ${format === "audio" ? "áudio MP3 com capa e tags" : quality}. Aguarde...`,
+      description: `Processando ${
+        format === "audio" ? "áudio MP3 com capa e tags" : quality
+      }. Aguarde...`,
     });
 
-    if (pollIntervalRef.current) {
-      clearInterval(pollIntervalRef.current);
-    }
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
 
     try {
-      // Start download job via local API
-      const startRes = await fetch("/api/start-download", {
+      const analysis = parseYouTubeUrl(currentUrl);
+      const targetUrl = analysis.cleanVideoUrl || currentUrl;
+
+      const startRes = await fetch(getApiUrl("/api/start-download"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          url: currentUrl,
+          url: targetUrl,
           format,
           quality,
           title: meta?.title || video?.title,
@@ -170,10 +305,9 @@ const Index = () => {
       const startData = await startRes.json();
       const jobId = startData.jobId;
 
-      // Poll progress every 500ms
       pollIntervalRef.current = setInterval(async () => {
         try {
-          const progRes = await fetch(`/api/progress?jobId=${jobId}`);
+          const progRes = await fetch(getApiUrl(`/api/progress?jobId=${jobId}`));
           if (!progRes.ok) return;
 
           const progData = await progRes.json();
@@ -191,11 +325,12 @@ const Index = () => {
             setDownloadMessage("Download finalizado! Salvando no computador...");
             setIsDownloading(false);
 
-            const filename = progData.filename || (format === "audio" ? "audio.mp3" : "video.mp4");
+            const filename =
+              progData.filename ||
+              (format === "audio" ? "audio.mp3" : "video.mp4");
             setDownloadReadyFile({ jobId, filename });
 
-            // Trigger browser direct file save
-            const fileUrl = `/api/file?jobId=${jobId}`;
+            const fileUrl = getApiUrl(`/api/file?jobId=${jobId}`);
             const link = document.createElement("a");
             link.href = fileUrl;
             link.download = filename;
@@ -234,6 +369,145 @@ const Index = () => {
     }
   };
 
+  const handlePlaylistDownload = async (
+    format: "video" | "audio",
+    quality: string,
+    selectedIds: string[],
+    selectedIndices?: number[]
+  ) => {
+    if (!playlist || isPlaylistDownloading) return;
+
+    setIsPlaylistDownloading(true);
+    setPlaylistProgress(0);
+    setPlaylistSpeed("");
+    setPlaylistEta("");
+    setPlaylistMessage("Iniciando download das faixas da playlist...");
+    setPlaylistError(null);
+    setPlaylistReadyFile(null);
+
+    toast({
+      title: "Iniciando download da playlist...",
+      description: `Baixando ${selectedIds.length} faixas em formato ${
+        format === "audio" ? "MP3 com tags e capas" : "MP4"
+      } para arquivo ZIP.`,
+    });
+
+    if (playlistPollIntervalRef.current) {
+      clearInterval(playlistPollIntervalRef.current);
+    }
+
+    try {
+      const res = await fetch(getApiUrl("/api/start-playlist-download"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          playlistId: playlist.id,
+          playlistTitle: playlist.title,
+          format,
+          quality,
+          selectedVideoIds: selectedIds,
+          selectedIndices,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Erro ao iniciar download da playlist.");
+      }
+
+      const data = await res.json();
+      const jobId = data.jobId;
+
+      playlistPollIntervalRef.current = setInterval(async () => {
+        try {
+          const progRes = await fetch(getApiUrl(`/api/progress?jobId=${jobId}`));
+          if (!progRes.ok) return;
+
+          const progData = await progRes.json();
+
+          if (progData.progress !== undefined) {
+            setPlaylistProgress(progData.progress);
+          }
+          if (progData.speed) setPlaylistSpeed(progData.speed);
+          if (progData.eta) setPlaylistEta(progData.eta);
+          if (progData.message) setPlaylistMessage(progData.message);
+
+          if (progData.status === "ready") {
+            if (playlistPollIntervalRef.current) {
+              clearInterval(playlistPollIntervalRef.current);
+            }
+            setPlaylistProgress(100);
+            setPlaylistMessage("Playlist concluída! Salvando arquivo ZIP...");
+            setIsPlaylistDownloading(false);
+
+            const filename = progData.filename || `${playlist.title || "playlist"}.zip`;
+            setPlaylistReadyFile({ jobId, filename });
+
+            const fileUrl = getApiUrl(`/api/file?jobId=${jobId}`);
+            const link = document.createElement("a");
+            link.href = fileUrl;
+            link.download = filename;
+            link.style.display = "none";
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+
+            toast({
+              title: "Playlist concluída!",
+              description: `O arquivo ${filename} foi baixado com sucesso.`,
+            });
+          } else if (progData.status === "error") {
+            if (playlistPollIntervalRef.current) {
+              clearInterval(playlistPollIntervalRef.current);
+            }
+            setIsPlaylistDownloading(false);
+            setPlaylistError(progData.error || "Falha no download da playlist.");
+            toast({
+              title: "Erro na playlist",
+              description: progData.error || "Falha ao baixar músicas da playlist.",
+              variant: "destructive",
+            });
+          }
+        } catch (pollErr) {
+          console.error("Playlist poll error:", pollErr);
+        }
+      }, 600);
+    } catch (err: any) {
+      setIsPlaylistDownloading(false);
+      setPlaylistError(err.message || "Erro ao conectar com o servidor.");
+      toast({
+        title: "Erro ao processar playlist",
+        description: err.message,
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleDownloadSingleTrackFromPlaylist = (track: PlaylistEntry) => {
+    setVideo({
+      title: track.title,
+      rawTitle: track.rawTitle,
+      artist: track.artist,
+      album: track.album,
+      year: track.year,
+      thumbnail: track.thumbnail,
+      duration: track.duration || "",
+      views: "",
+      channel: track.channel || "",
+    });
+    setCurrentUrl(track.url || `https://www.youtube.com/watch?v=${track.id}`);
+    setActiveView("video");
+    setShowChoicePrompt(false);
+
+    toast({
+      title: "Música selecionada",
+      description: `Configurando download individual de: ${track.title}`,
+    });
+  };
+
+  const analysis = currentUrl ? parseYouTubeUrl(currentUrl) : null;
+  const hasBoth = !!(analysis?.isVideoWithPlaylist && (video || playlist));
+
   return (
     <div className="min-h-screen bg-background relative overflow-hidden flex flex-col justify-between">
       <div className="absolute inset-0 gradient-hero pointer-events-none" />
@@ -246,19 +520,19 @@ const Index = () => {
               Bear Catch Downloader
             </span>
             <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-primary/10 text-primary border border-primary/20">
-              v2.0 Turbo
+              v2.5 Playlist Turbo
             </span>
           </div>
         </header>
 
-        <main className="container max-w-4xl mx-auto px-4 pt-10 pb-16 space-y-8">
+        <main className="container max-w-4xl mx-auto px-4 pt-8 pb-16 space-y-6">
           <motion.div
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.6 }}
-            className="text-center space-y-4"
+            className="text-center space-y-3"
           >
-            <div className="flex items-center justify-center gap-3 mb-4">
+            <div className="flex items-center justify-center gap-3 mb-3">
               <div className="relative group">
                 <div className="absolute -inset-2 bg-primary/30 rounded-full blur-xl group-hover:bg-primary/50 transition-all duration-500" />
                 <img
@@ -272,23 +546,81 @@ const Index = () => {
             <h1 className="text-4xl md:text-5xl lg:text-6xl font-display font-extrabold text-foreground tracking-tight">
               <span className="text-gradient">Bear Catch</span> Downloader
             </h1>
-            <p className="text-muted-foreground text-base md:text-lg max-w-lg mx-auto">
-              Baixe vídeos e músicas do YouTube em alta velocidade e qualidade máxima. Cole o link e o download começará imediatamente!
+            <p className="text-muted-foreground text-sm md:text-base max-w-xl mx-auto">
+              Baixe vídeos, faixas avulsas e <span className="text-foreground font-semibold">playlists completas</span> do YouTube em qualidade máxima com capas embutidas e tags automáticas.
             </p>
           </motion.div>
 
           <UrlInput
             onSubmit={handleSearch}
             isLoading={isLoading}
-            isDownloading={isDownloading}
+            isDownloading={isDownloading || isPlaylistDownloading}
           />
 
-          {video && (
+          {/* Interactive Choice Prompt when link contains a song in a playlist */}
+          <AnimatePresence>
+            {showChoicePrompt && (
+              <PlaylistChoicePrompt
+                key="choice-prompt"
+                videoTitle={video?.title}
+                playlistItemCount={playlist?.itemCount}
+                onChooseSingle={() => {
+                  setShowChoicePrompt(false);
+                  setActiveView("video");
+                }}
+                onChoosePlaylist={() => {
+                  setShowChoicePrompt(false);
+                  setActiveView("playlist");
+                }}
+              />
+            )}
+          </AnimatePresence>
+
+          {/* View Switcher Tabs (Only visible when link contains both single video & playlist) */}
+          {hasBoth && !showChoicePrompt && (
             <motion.div
+              initial={{ opacity: 0, y: 5 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="flex items-center justify-center"
+            >
+              <div className="flex items-center p-1 bg-card/80 border border-border/80 rounded-xl backdrop-blur-md shadow-sm">
+                <button
+                  type="button"
+                  onClick={() => setActiveView("video")}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs md:text-sm font-semibold transition-all duration-200 ${
+                    activeView === "video"
+                      ? "bg-primary text-primary-foreground shadow-md shadow-primary/20"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <Music className="h-4 w-4" />
+                  Música Individual
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveView("playlist")}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs md:text-sm font-semibold transition-all duration-200 ${
+                    activeView === "playlist"
+                      ? "bg-primary text-primary-foreground shadow-md shadow-primary/20"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <ListMusic className="h-4 w-4" />
+                  Playlist Completa {playlist?.itemCount ? `(${playlist.itemCount})` : ""}
+                </button>
+              </div>
+            </motion.div>
+          )}
+
+          {/* Single Video View */}
+          {activeView === "video" && video && (
+            <motion.div
+              key="video-view"
               initial={{ opacity: 0, y: 15 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.4 }}
-              className="space-y-6"
+              exit={{ opacity: 0, y: -10 }}
+              transition={{ duration: 0.35 }}
+              className="space-y-5"
             >
               <VideoPreview video={video} />
               <FormatSelector
@@ -305,19 +637,55 @@ const Index = () => {
             </motion.div>
           )}
 
-          {!video && (
+          {/* Playlist View */}
+          {activeView === "playlist" && playlist && (
+            <motion.div
+              key="playlist-view"
+              initial={{ opacity: 0, y: 15 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              transition={{ duration: 0.35 }}
+              className="space-y-5"
+            >
+              <PlaylistPreview
+                playlist={playlist}
+                onDownloadPlaylist={handlePlaylistDownload}
+                onDownloadSingleTrack={handleDownloadSingleTrackFromPlaylist}
+                isDownloading={isPlaylistDownloading}
+                downloadProgress={playlistProgress}
+                downloadSpeed={playlistSpeed}
+                downloadEta={playlistEta}
+                downloadMessage={playlistMessage}
+                downloadError={playlistError}
+                downloadReadyFile={playlistReadyFile}
+              />
+            </motion.div>
+          )}
+
+          {/* Loading Indicator */}
+          {isLoading && !video && !playlist && (
+            <div className="flex flex-col items-center justify-center py-16 space-y-3">
+              <Loader2 className="h-8 w-8 text-primary animate-spin" />
+              <p className="text-sm text-muted-foreground">
+                Buscando informações do YouTube...
+              </p>
+            </div>
+          )}
+
+          {/* Features Grid (Shown when nothing is searched yet) */}
+          {!video && !playlist && !isLoading && (
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              transition={{ delay: 0.4, duration: 0.5 }}
-              className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-8"
+              transition={{ delay: 0.3, duration: 0.5 }}
+              className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-6"
             >
               {features.map((f, i) => (
                 <motion.div
                   key={f.title}
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.5 + i * 0.1, duration: 0.4 }}
+                  transition={{ delay: 0.4 + i * 0.1, duration: 0.4 }}
                   className="flex flex-col items-center text-center p-6 bg-card/60 backdrop-blur-md border border-border/60 rounded-2xl hover:border-primary/40 transition-colors shadow-sm"
                 >
                   <div className="p-3 bg-primary/10 border border-primary/20 rounded-xl mb-3 text-primary">
@@ -337,7 +705,9 @@ const Index = () => {
       </div>
 
       <footer className="text-center py-6 text-muted-foreground text-xs border-t border-border/40 relative z-10 bg-card/20">
-        <p>Bear Catch Downloader. Desenvolvido para uso pessoal e legal. Respeite os direitos autorais dos criadores.</p>
+        <p>
+          Bear Catch Downloader. Suporta download de faixas individuais e playlists completas em ZIP.
+        </p>
       </footer>
     </div>
   );
