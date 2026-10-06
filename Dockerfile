@@ -12,9 +12,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install the latest official yt-dlp binary directly
-RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
-    && chmod a+rx /usr/local/bin/yt-dlp
+# Install the latest yt-dlp with JavaScript solvers and pre-release fixes
+RUN pip3 install --no-cache-dir --break-system-packages -U --pre "yt-dlp[default]" \
+    || (curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && chmod a+rx /usr/local/bin/yt-dlp)
 
 # Verify installations
 RUN yt-dlp --version && ffmpeg -version
