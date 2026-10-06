@@ -542,29 +542,26 @@ const Index = () => {
             </span>
           </div>
 
-          <ServerSettingsModal
-            open={showServerModal}
-            onOpenChange={setShowServerModal}
-            trigger={
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-8 text-xs gap-1.5 rounded-full bg-card/60 border-border/60 backdrop-blur-md"
-              >
-                <Server className="h-3.5 w-3.5 text-primary" />
-                <span className="hidden sm:inline">Servidor:</span>
-                {getApiBaseUrl() ? (
-                  <span className="text-emerald-400 font-medium truncate max-w-[120px]">
-                    Conectado
-                  </span>
-                ) : isStaticGitHubPages() ? (
-                  <span className="text-amber-400 font-medium">Modo Estático</span>
-                ) : (
-                  <span className="text-foreground/80">Local</span>
-                )}
-              </Button>
-            }
-          />
+          <div className="flex items-center gap-2">
+            <ServerSettingsModal
+              open={showServerModal}
+              onOpenChange={setShowServerModal}
+              trigger={
+                <Button
+                  size="sm"
+                  className="h-9 px-3.5 text-xs font-semibold gap-2 rounded-full bg-primary/20 hover:bg-primary/30 text-primary border border-primary/40 shadow-sm transition-all"
+                >
+                  <Server className="h-4 w-4 shrink-0 text-primary" />
+                  <span>Conectar Servidor</span>
+                  {getApiBaseUrl() ? (
+                    <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                  ) : (
+                    <span className="h-2 w-2 rounded-full bg-amber-400 animate-pulse" />
+                  )}
+                </Button>
+              }
+            />
+          </div>
         </header>
 
         <main className="container max-w-4xl mx-auto px-4 pt-8 pb-16 space-y-6">
@@ -623,6 +620,30 @@ const Index = () => {
             <p className="text-muted-foreground text-sm md:text-base max-w-xl mx-auto">
               Baixe vídeos, faixas avulsas e <span className="text-foreground font-semibold">playlists completas</span> do YouTube em qualidade máxima com capas embutidas e tags automáticas.
             </p>
+
+            <div className="flex items-center justify-center pt-1">
+              <button
+                type="button"
+                onClick={() => setShowServerModal(true)}
+                className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs bg-card/70 hover:bg-card border border-border/70 hover:border-primary/40 transition-all text-muted-foreground hover:text-foreground cursor-pointer shadow-sm"
+              >
+                <Server className="h-3.5 w-3.5 text-primary" />
+                <span>Status do Servidor:</span>
+                {getApiBaseUrl() ? (
+                  <span className="text-emerald-400 font-medium flex items-center gap-1">
+                    ● Conectado ({getApiBaseUrl()})
+                  </span>
+                ) : isStaticGitHubPages() ? (
+                  <span className="text-amber-400 font-medium flex items-center gap-1">
+                    ● Desconectado (Clique para conectar o Render)
+                  </span>
+                ) : (
+                  <span className="text-emerald-400 font-medium flex items-center gap-1">
+                    ● Servidor Local Ativo
+                  </span>
+                )}
+              </button>
+            </div>
           </motion.div>
 
           <UrlInput
