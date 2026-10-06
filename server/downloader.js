@@ -254,9 +254,7 @@ export async function getVideoInfo(url) {
     }, 12000);
 
     const proc = spawn("yt-dlp", [
-      "--js-runtimes", "node",
-      "--remote-components", "ejs:github",
-      "--extractor-args", "youtube:player_client=ios,android,web,mweb",
+      "--extractor-args", "youtube:player_client=android,ios,web,web_embedded",
       "--dump-json",
       "--no-playlist",
       cleanUrl,
@@ -388,9 +386,7 @@ export function startDownloadJob({
   const outputTemplate = path.join(tmpDir, `bearcatch_${jobId}.%(ext)s`);
 
   let args = [
-    "--js-runtimes", "node",
-    "--remote-components", "ejs:github",
-    "--extractor-args", "youtube:player_client=ios,android,web,mweb",
+    "--extractor-args", "youtube:player_client=android,ios,web,web_embedded",
     "--no-playlist",
     "--no-warnings",
   ];
@@ -579,9 +575,7 @@ export async function getPlaylistInfo(urlOrId) {
 
   return new Promise((resolve, reject) => {
     const proc = spawn("yt-dlp", [
-      "--js-runtimes", "node",
-      "--remote-components", "ejs:github",
-      "--extractor-args", "youtube:player_client=ios,android,web,mweb",
+      "--extractor-args", "youtube:player_client=android,ios,web,web_embedded",
       "--flat-playlist",
       "--dump-single-json",
       playlistUrl,
@@ -686,9 +680,7 @@ export function startPlaylistDownloadJob({
   const outputTemplate = path.join(jobDir, "%(playlist_index&{:02d} - |)s%(title)s.%(ext)s");
 
   let args = [
-    "--js-runtimes", "node",
-    "--remote-components", "ejs:github",
-    "--extractor-args", "youtube:player_client=ios,android,web,mweb",
+    "--extractor-args", "youtube:player_client=android,ios,web,web_embedded",
     "--no-warnings",
     "--ignore-errors",
   ];
