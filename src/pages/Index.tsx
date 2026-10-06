@@ -11,12 +11,17 @@ import {
   FolderArchive,
   Layers,
   Loader2,
+  Server,
+  AlertTriangle,
+  Laptop,
 } from "lucide-react";
 import UrlInput from "@/components/UrlInput";
 import VideoPreview, { type VideoInfo } from "@/components/VideoPreview";
 import FormatSelector from "@/components/FormatSelector";
 import PlaylistPreview from "@/components/PlaylistPreview";
 import PlaylistChoicePrompt from "@/components/PlaylistChoicePrompt";
+import ServerSettingsModal from "@/components/ServerSettingsModal";
+import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import {
   parseYouTubeUrl,
@@ -24,7 +29,7 @@ import {
   type PlaylistInfo,
   type PlaylistEntry,
 } from "@/lib/youtube";
-import { getApiUrl } from "@/lib/api";
+import { getApiUrl, isStaticGitHubPages, getApiBaseUrl } from "@/lib/api";
 import bearLogo from "@/assets/bear-logo.png";
 
 const features = [
@@ -78,6 +83,7 @@ const Index = () => {
   // Active view ("video" or "playlist") when link has both
   const [activeView, setActiveView] = useState<"video" | "playlist">("video");
   const [showChoicePrompt, setShowChoicePrompt] = useState(false);
+  const [showServerModal, setShowServerModal] = useState(false);
 
   const { toast } = useToast();
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -298,6 +304,12 @@ const Index = () => {
       });
 
       if (!startRes.ok) {
+        if (startRes.status === 405) {
+          setShowServerModal(true);
+          throw new Error(
+            "O GitHub Pages é estático e não pode processar downloads diretamente. Conecte sua URL do backend (Render) ou use o aplicativo para Windows (.exe)!"
+          );
+        }
         const err = await startRes.json().catch(() => ({}));
         throw new Error(err.error || `Erro ${startRes.status} ao iniciar download.`);
       }
@@ -411,6 +423,12 @@ const Index = () => {
       });
 
       if (!res.ok) {
+        if (res.status === 405) {
+          setShowServerModal(true);
+          throw new Error(
+            "O GitHub Pages é estático e não pode processar downloads diretamente. Conecte sua URL do backend (Render) ou use o aplicativo para Windows (.exe)!"
+          );
+        }
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || "Erro ao iniciar download da playlist.");
       }
@@ -513,7 +531,7 @@ const Index = () => {
       <div className="absolute inset-0 gradient-hero pointer-events-none" />
 
       <div className="relative z-10 flex-1">
-        <header className="flex items-center justify-center pt-6 pb-2">
+        <header className="flex items-center justify-between max-w-4xl mx-auto px-4 pt-6 pb-2">
           <div className="flex items-center gap-2.5 px-4 py-1.5 rounded-full bg-card/60 border border-border/60 backdrop-blur-md shadow-sm">
             <img src={bearLogo} alt="Bear Catch" className="h-5 w-auto" />
             <span className="font-semibold text-foreground text-sm tracking-tight">
@@ -523,9 +541,65 @@ const Index = () => {
               v2.5 Playlist Turbo
             </span>
           </div>
+
+          <ServerSettingsModal
+            open={showServerModal}
+            onOpenChange={setShowServerModal}
+            trigger={
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 text-xs gap-1.5 rounded-full bg-card/60 border-border/60 backdrop-blur-md"
+              >
+                <Server className="h-3.5 w-3.5 text-primary" />
+                <span className="hidden sm:inline">Servidor:</span>
+                {getApiBaseUrl() ? (
+                  <span className="text-emerald-400 font-medium truncate max-w-[120px]">
+                    Conectado
+                  </span>
+                ) : isStaticGitHubPages() ? (
+                  <span className="text-amber-400 font-medium">Modo Estático</span>
+                ) : (
+                  <span className="text-foreground/80">Local</span>
+                )}
+              </Button>
+            }
+          />
         </header>
 
         <main className="container max-w-4xl mx-auto px-4 pt-8 pb-16 space-y-6">
+          {isStaticGitHubPages() && (
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs"
+            >
+              <div className="flex items-center gap-2.5 text-amber-300">
+                <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
+                <span>
+                  Você está acessando pelo <strong>GitHub Pages</strong>. Para baixar músicas e vídeos, conecte seu backend do <strong>Render</strong> ou baixe o app para <strong>Windows (.exe)</strong>.
+                </span>
+              </div>
+              <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto justify-end">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setShowServerModal(true)}
+                  className="h-8 text-xs border-amber-500/40 text-amber-300 hover:bg-amber-500/20"
+                >
+                  <Server className="h-3.5 w-3.5 mr-1.5" /> Conectar Servidor
+                </Button>
+                <a
+                  href="https://github.com/kassioben10-lgtm/bearcathdownloader/actions"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="px-3 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 font-semibold text-xs transition-colors flex items-center gap-1.5"
+                >
+                  <Laptop className="h-3.5 w-3.5" /> Baixar .exe
+                </a>
+              </div>
+            </motion.div>
+          )}
           <motion.div
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
